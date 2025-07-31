@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8"/>
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"/>
+    <title>Генератор номеров по маске (рэнджу)</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+</head>
+<body class="d-flex flex-column">
+    <div class="container-xl mt-4">
+        <h1>Генератор номеров по маске (рэнджу)</h1>
+        <p>
+            Введите маску номера, используя 'X' для обозначения случайных цифр. <br/>
+            Пример: <code>+3754457XXXXX</code> (сгенерирует номера вида +3754457... с 5 случайными цифрами в конце).
+        </p>
+
+        {% if success %}
+        <div class="alert alert-success" role="alert">{{ success }}</div>
+        {% endif %}
+        {% if error %}
+        <div class="alert alert-danger" role="alert">{{ error }}</div>
+        {% endif %}
+
+        <form action="/generator" method="post">
+            <div class="mb-3">
+                <label class="form-label">Маска номера (рэндж)</label>
+                <input type="text" name="mask" class="form-control" placeholder="+3754457XXXXX" required>
+            </div>
+            <div class="mb-3">
+                <label class="form-label">Количество номеров для генерации</label>
+                <input type="number" name="quantity" class="form-control" value="100" required>
+            </div>
+            <div class="mb-3">
+                <label class="form-label">Провайдер</label>
+                <select name="provider_id" class="form-select" required>
+                    {% for provider in providers %}
+                    <option value="{{ provider.id }}">{{ provider.name }}</option>
+                    {% endfor %}
+                </select>
+            </div>
+            <div class="mb-3">
+                <label class="form-label">Страна</label>
+                <select name="country_id" class="form-select" required>
+                    {% for country in countries %}
+                    <option value="{{ country.id }}">{{ country.name }}</option>
+                    {% endfor %}
+                </select>
+            </div>
+            <button type="submit" class="btn btn-primary">Сгенерировать и добавить</button>
+        </form>
+        <div class="mt-4"><a href="/admin">Вернуться в админку</a></div>
+    </div>
+</body>
+</html>

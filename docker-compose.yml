@@ -1,74 +1,62 @@
 version: '3.8'
 
 services:
-  # Сервис нашего приложения
+  # Сервис 1: Ваше Python-приложение
   app:
-    # Собирать образ из текущей директории, используя Dockerfile
     build: .
-    # Имя контейнера для удобства
-    container_name: sms_service_app
-    # Пробрасываем переменные окружения из нашего .env файла
-    env_file:
-      - .env
-    # Переопределяем DB_HOST, чтобы приложение искало БД по имени сервиса 'db'
-    environment:
-      - DB_HOST=db
-    # Пробрасываем порт 8000 из контейнера наружу на наш сервер
+    container_name: sms_app
+    restart: unless-stopped
     ports:
       - "8000:8000"
-    # Указываем, что наше приложение зависит от сервиса 'db'
-    # Docker сначала запустит 'db' и дождется его готовности, и только потом запустит 'app'
-    depends_on:
-      db:
-        condition: service_healthy
-    # Перезапускать контейнер автоматически, если он упадет
-    restart: unless-stopped
-
-  # Сервис базы данных PostgreSQL
-  db:
-    # Используем официальный образ PostgreSQL версии 14
-    image: postgres:14-alpine
-    container_name: sms_service_db
-    # Пробрасываем переменные для инициализации базы данных
-    # PostgreSQL автоматически создаст пользователя и БД с этими именами
     environment:
-      POSTGRES_USER: ${DB_USER}
-      POSTGRES_PASSWORD: ${DB_PASSWORD}
-      POSTGRES_DB: ${DB_NAME}
-    # Указываем, где хранить данные БД на хост-машине (нашем сервере)
-    # Это гарантирует, что данные не пропадут при перезапуске контейнера
-    volumes:
-      - postgres_data:/var/lib/postgresql/data/
-    # Проверка состояния. Docker будет считать сервис готовым, когда эта команда выполнится успешно
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${DB_USER} -d ${DB_NAME}"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-    # Перезапускать контейнер автоматически
-    restart: unless-stopped
-
-  # Сервис для приема входящих SMPP соединений
-  smpp-server:
-    # Используем тот же самый образ, что и для основного приложения
-    build: .
-    container_name: sms_service_smpp_server
-    # Пробрасываем переменные для доступа к БД
-    env_file:
-      - .env
-    environment:
+      - DB_USER=sms_user
+      - DB_PASSWORD=2517grot
+      - DB_NAME=sms_db
       - DB_HOST=db
-    # Пробрасываем порт 40000 для приема соединений от провайдера
-    ports:
-      - "40000:40000"
-    # Запускаем не uvicorn, а наш новый серверный скрипт
-    command: ["python", "-m", "src.smpp_server"]
-    # Также зависит от готовности базы данных
+      - LOG_SQL=False
     depends_on:
-      db:
-        condition: service_healthy
-    restart: unless-stopped
+      - db
 
-# Определяем именованный том для хранения данных БД
+  # Сервис 2: База данных PostgreSQL
+  db:
+    image: postgres:13
+    container_name: postgres_db
+    restart: unless-stopped
+    environment:
+      - POSTGRES_USER=sms_user
+      - POSTGRES_PASSWORD=2517grot
+      - POSTGRES_DB=sms_db
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+
+  # Сервис 3: Prometheus для сбора метрик
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: prometheus
+    restart: unless-stopped
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+    depends_on:
+      - app
+
+  # Сервис 4: Grafana для визуализации
+  grafana:
+    image: grafana/grafana-oss:latest
+    container_name: grafana
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    volumes:
+      - grafana-data:/var/lib/grafana
+    depends_on:
+      - prometheus
+
 volumes:
-  postgres_data:
+  postgres-data:
+  grafana-data:

@@ -1,0 +1,451 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Инструменты | Панель управления</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <link href="https://cdn.jsdelivr.net/npm/tom-select@2.2.2/dist/css/tom-select.css" rel="stylesheet">
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
+        body { font-family: 'Inter', sans-serif; background-color: #f8fafc; }
+        .fade-scale { animation: fadeScaleIn 0.3s ease-out; }
+        @keyframes fadeScaleIn { 0% { opacity: 0; transform: scale(0.95); } 100% { opacity: 1; transform: scale(1); } }
+        .nav-link { border-color: transparent !important; }
+        .nav-link.active { border-bottom-color: #3b82f6 !important; color: #3b82f6 !important; }
+        .tab-pane { display: none; }
+        .tab-pane.show.active { display: block; }
+        
+        .ts-control {
+            border-radius: 0.5rem !important;
+            border-color: #d1d5db !important;
+            padding: 0.5rem 1rem !important;
+        }
+        .ts-dropdown {
+            border-radius: 0.5rem !important;
+        }
+        
+        #service_ids-ts-wrapper .ts-dropdown .ts-dropdown-content {
+            max-height: 250px !important;
+        }
+    </style>
+</head>
+<body class="bg-gray-50">
+<div class="container mx-auto px-4 py-8">
+    <div class="flex justify-between items-center mb-8">
+        <div><h1 class="text-3xl font-bold text-gray-800">Центр управления инструментами</h1><p class="text-gray-500 mt-1">Мониторинг и управление системными инструментами</p></div>
+        <a href="/admin" class="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition inline-flex items-center"><i class="fas fa-arrow-left mr-2"></i> Вернуться в Админку</a>
+    </div>
+
+    <div class="mb-8 border-b border-gray-200">
+        <ul class="flex flex-wrap -mb-px text-sm font-medium text-center" id="toolsTab" role="tablist">
+            <li role="presentation"><button class="nav-link inline-flex items-center justify-center p-4 border-b-2 rounded-t-lg group active" id="stats-tab" data-bs-toggle="tab" data-bs-target="#stats-pane" type="button"><i class="fas fa-chart-line mr-2"></i>Аналитический дашборд</button></li>
+            <li role="presentation"><button class="nav-link inline-flex items-center justify-center p-4 border-b-2 rounded-t-lg group" id="orphan-traffic-tab" data-bs-toggle="tab" data-bs-target="#orphan-traffic-pane" type="button"><i class="fas fa-chart-bar mr-2"></i>Анализ трафика</button></li>
+            <li role="presentation"><button class="nav-link inline-flex items-center justify-center p-4 border-b-2 rounded-t-lg group" id="api-stats-tab" data-bs-toggle="tab" data-bs-target="#api-stats-pane" type="button"><i class="fas fa-key mr-2"></i>Статистика API</button></li>
+            <li role="presentation"><button class="nav-link inline-flex items-center justify-center p-4 border-b-2 rounded-t-lg group" id="tester-tab" data-bs-toggle="tab" data-bs-target="#tester-pane" type="button"><i class="fas fa-vial mr-2"></i>Тестер API</button></li>
+            <li role="presentation"><button class="nav-link inline-flex items-center justify-center p-4 border-b-2 rounded-t-lg group" id="bulk-limits-tab" data-bs-toggle="tab" data-bs-target="#bulk-limits-pane" type="button"><i class="fas fa-layer-group mr-2"></i>Массовые лимиты</button></li>
+            <li role="presentation"><button class="nav-link inline-flex items-center justify-center p-4 border-b-2 rounded-t-lg group" id="importer-tab" data-bs-toggle="tab" data-bs-target="#importer-pane" type="button"><i class="fas fa-file-import mr-2"></i>Импорт</button></li>
+            <li role="presentation"><button class="nav-link inline-flex items-center justify-center p-4 border-b-2 rounded-t-lg group" id="generator-tab" data-bs-toggle="tab" data-bs-target="#generator-pane" type="button"><i class="fas fa-cogs mr-2"></i>Генератор</button></li>
+            <li role="presentation"><button class="nav-link inline-flex items-center justify-center p-4 border-b-2 rounded-t-lg group" id="manager-tab" data-bs-toggle="tab" data-bs-target="#manager-pane" type="button"><i class="fas fa-users-cog mr-2"></i>Менеджер</button></li>
+        </ul>
+    </div>
+    
+    <div class="bg-white p-4 rounded-lg shadow-sm mb-8">
+        <form method="get" action="/tools" id="dateFilterForm">
+            <input type="hidden" name="tab" value="stats-pane" id="mainTabInput">
+            <div class="grid grid-cols-1 md:grid-cols-3 gap-4 items-end">
+                <div><label for="start_date_str" class="block text-sm font-medium text-gray-700 mb-1">Начальная дата</label><input type="date" name="start_date_str" id="start_date_str" class="w-full px-4 py-2 border border-gray-300 rounded-lg" value="{{ start_date_str }}"></div>
+                <div><label for="end_date_str" class="block text-sm font-medium text-gray-700 mb-1">Конечная дата</label><input type="date" name="end_date_str" id="end_date_str" class="w-full px-4 py-2 border border-gray-300 rounded-lg" value="{{ end_date_str }}"></div>
+                <div><button type="submit" class="w-full bg-indigo-600 hover:bg-indigo-700 text-white py-2 px-4 rounded-lg">Применить фильтр</button></div>
+            </div>
+        </form>
+    </div>
+
+    <div class="tab-content" id="toolsTabContent">
+        <div class="tab-pane fade-scale p-4 bg-white rounded-lg shadow-sm show active" id="stats-pane" role="tabpanel">
+            <h3 class="text-xl font-semibold mb-4">Аналитический дашборд</h3>
+            <p class="text-gray-500 mb-6">Динамическая статистика по SMS с учетом выбранного периода и фильтров.</p>
+            
+            <div class="bg-gray-50 p-4 rounded-lg mb-6">
+                <form method="get" action="/tools" id="dashboardFilterForm">
+                    <input type="hidden" name="tab" value="stats-pane">
+                    <input type="hidden" name="start_date_str" value="{{ start_date_str }}">
+                    <input type="hidden" name="end_date_str" value="{{ end_date_str }}">
+                    <div class="grid grid-cols-1 md:grid-cols-4 gap-4 items-end">
+                        <div>
+                            <label for="stat_provider_id" class="block text-sm font-medium text-gray-700 mb-1">Провайдер</label>
+                            <select name="stat_provider_id" id="stat_provider_id" class="w-full px-4 py-2 border border-gray-300 rounded-lg">
+                                <option value="">-- Все --</option>
+                                {% for p in providers %}<option value="{{ p.id }}" {% if stat_filters.provider_id == p.id %}selected{% endif %}>{{ p.name }}</option>{% endfor %}
+                            </select>
+                        </div>
+                        <div>
+                            <label for="stat_country_id" class="block text-sm font-medium text-gray-700 mb-1">Страна</label>
+                            <select name="stat_country_id" id="stat_country_id" class="w-full px-4 py-2 border border-gray-300 rounded-lg">
+                                <option value="">-- Все --</option>
+                                {% for c in countries %}<option value="{{ c.id }}" {% if stat_filters.country_id == c.id %}selected{% endif %}>{{ c.name }}</option>{% endfor %}
+                            </select>
+                        </div>
+                        <div>
+                            <label for="stat_service_id" class="block text-sm font-medium text-gray-700 mb-1">Сервис</label>
+                            <select name="stat_service_id" id="stat_service_id" class="w-full px-4 py-2 border border-gray-300 rounded-lg">
+                                <option value="">-- Все --</option>
+                                {% for s in all_services %}<option value="{{ s.id }}" {% if stat_filters.service_id == s.id %}selected{% endif %}>{{ s.name }}</option>{% endfor %}
+                            </select>
+                        </div>
+                        <div class="flex space-x-2">
+                            <button type="submit" class="w-full bg-blue-600 hover:bg-blue-700 text-white py-2 px-4 rounded-lg">Применить</button>
+                            <a href="/tools?tab=stats-pane&start_date_str={{ start_date_str }}&end_date_str={{ end_date_str }}" class="w-full text-center bg-gray-300 hover:bg-gray-400 text-gray-800 py-2 px-4 rounded-lg">Сброс</a>
+                        </div>
+                    </div>
+                </form>
+            </div>
+
+            <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
+                <div class="bg-white p-6 rounded-xl shadow-sm border-l-4 border-blue-500"><div class="flex items-center justify-between"><p class="text-gray-500 font-medium">Всего SMS</p><i class="fas fa-comment-sms text-2xl text-blue-500"></i></div><h3 class="text-3xl font-bold mt-2">{{ dashboard_stats.total_sms }}</h3></div>
+                <div class="bg-white p-6 rounded-xl shadow-sm border-l-4 border-purple-500"><div class="flex items-center justify-between"><p class="text-gray-500 font-medium">Уникальных номеров</p><i class="fas fa-mobile-alt text-2xl text-purple-500"></i></div><h3 class="text-3xl font-bold mt-2">{{ dashboard_stats.unique_numbers }}</h3></div>
+                <div class="bg-white p-6 rounded-xl shadow-sm border-l-4 border-green-500"><div class="flex items-center justify-between"><p class="text-gray-500 font-medium">Уникальных сервисов</p><i class="fas fa-cogs text-2xl text-green-500"></i></div><h3 class="text-3xl font-bold mt-2">{{ dashboard_stats.unique_services }}</h3></div>
+                <div class="bg-white p-6 rounded-xl shadow-sm border-l-4 border-yellow-500"><div class="flex items-center justify-between"><p class="text-gray-500 font-medium">SMS на номер (сред.)</p><i class="fas fa-calculator text-2xl text-yellow-500"></i></div><h3 class="text-3xl font-bold mt-2">{{ dashboard_stats.avg_sms_per_number }}</h3></div>
+            </div>
+
+            <div class="grid grid-cols-1 lg:grid-cols-5 gap-6">
+                <div class="lg:col-span-3 bg-white p-6 rounded-lg shadow-sm">
+                     <h3 class="text-lg font-semibold mb-4">Активность SMS по дням</h3>
+                     <div class="relative h-96">
+                        <canvas id="smsActivityChart"></canvas>
+                     </div>
+                </div>
+                <div class="lg:col-span-2 bg-white p-6 rounded-lg shadow-sm">
+                    <div class="flex justify-between items-center mb-4">
+                        <h3 class="text-lg font-semibold">Детализация</h3>
+                        <div class="text-sm space-x-1">
+                            <a href="?{{ request.url.query }}&stat_group_by=service" class="px-3 py-1 rounded-lg {% if stat_filters.group_by == 'service' %}bg-blue-600 text-white{% else %}bg-gray-200 text-gray-800 hover:bg-gray-300{% endif %}">Сервис</a>
+                            <a href="?{{ request.url.query }}&stat_group_by=provider" class="px-3 py-1 rounded-lg {% if stat_filters.group_by == 'provider' %}bg-blue-600 text-white{% else %}bg-gray-200 text-gray-800 hover:bg-gray-300{% endif %}">Провайдер</a>
+                            <a href="?{{ request.url.query }}&stat_group_by=country" class="px-3 py-1 rounded-lg {% if stat_filters.group_by == 'country' %}bg-blue-600 text-white{% else %}bg-gray-200 text-gray-800 hover:bg-gray-300{% endif %}">Страна</a>
+                             <a href="?{{ request.url.query }}&stat_group_by=date" class="px-3 py-1 rounded-lg {% if stat_filters.group_by == 'date' %}bg-blue-600 text-white{% else %}bg-gray-200 text-gray-800 hover:bg-gray-300{% endif %}">Дата</a>
+                        </div>
+                    </div>
+                    <div class="overflow-auto" style="max-height: 400px;">
+                        <table class="min-w-full divide-y divide-gray-200">
+                            <thead class="bg-gray-50 sticky top-0">
+                                <tr>
+                                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                                        {% if stat_filters.group_by == 'provider' %}Провайдер
+                                        {% elif stat_filters.group_by == 'country' %}Страна
+                                        {% elif stat_filters.group_by == 'date' %}Дата
+                                        {% else %}Сервис{% endif %}
+                                    </th>
+                                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">SMS</th>
+                                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Номера</th>
+                                </tr>
+                            </thead>
+                            <tbody class="bg-white divide-y divide-gray-200">
+                                {% for row in details_table %}
+                                <tr>
+                                    <td class="px-6 py-4 whitespace-nowrap">{{ row.name }}</td>
+                                    <td class="px-6 py-4 whitespace-nowrap">{{ row.sms_count }}</td>
+                                    <td class="px-6 py-4 whitespace-nowrap">{{ row.unique_numbers }}</td>
+                                </tr>
+                                {% else %}
+                                <tr><td colspan="3" class="text-center py-4 text-gray-500">Нет данных по заданным фильтрам.</td></tr>
+                                {% endfor %}
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="tab-pane fade-scale p-4 bg-white rounded-lg shadow-sm" id="orphan-traffic-pane" role="tabpanel">
+            <h3 class="text-xl font-semibold mb-4">Анализ "осиротевшего" трафика</h3>
+            <p class="text-gray-500 mb-6">Здесь сгруппированы СМС, которые пришли на номера, но для которых не было активной сессии. Это "живой" трафик, который можно анализировать.</p>
+            <div class="bg-gray-50 p-4 rounded-lg mb-6">
+                <form method="get" action="/tools" id="orphanTrafficFilterForm">
+                    <input type="hidden" name="tab" value="orphan-traffic-pane">
+                    <div class="grid grid-cols-1 md:grid-cols-4 gap-4 items-end">
+                        <div>
+                            <label for="ot_search_sender" class="block text-sm font-medium text-gray-700 mb-1">Сендер (имя)</label>
+                            <input type="text" name="ot_search_sender" id="ot_search_sender" class="w-full px-4 py-2 border border-gray-300 rounded-lg" value="{{ ot_filters.search_sender or '' }}" placeholder="Напр. Google">
+                        </div>
+                        <div>
+                            <label for="ot_provider_id" class="block text-sm font-medium text-gray-700 mb-1">Провайдер</label>
+                            <select name="ot_provider_id" id="ot_provider_id" class="w-full px-4 py-2 border border-gray-300 rounded-lg">
+                                <option value="">-- Все провайдеры --</option>
+                                {% for provider in providers %}<option value="{{ provider.id }}" {% if ot_filters.provider_id == provider.id %}selected{% endif %}>{{ provider.name }}</option>{% endfor %}
+                            </select>
+                        </div>
+                        <div>
+                            <label for="ot_country_id" class="block text-sm font-medium text-gray-700 mb-1">Страна</label>
+                            <select name="ot_country_id" id="ot_country_id" class="w-full px-4 py-2 border border-gray-300 rounded-lg">
+                                <option value="">-- Все страны --</option>
+                                {% for country in countries %}<option value="{{ country.id }}" {% if ot_filters.country_id == country.id %}selected{% endif %}>{{ country.name }}</option>{% endfor %}
+                            </select>
+                        </div>
+                        <div class="flex space-x-2">
+                           <button type="submit" class="w-full bg-indigo-600 hover:bg-indigo-700 text-white py-2 px-4 rounded-lg">Фильтр</button>
+                           <a href="/tools?tab=orphan-traffic-pane" class="w-full text-center bg-gray-300 hover:bg-gray-400 text-gray-800 py-2 px-4 rounded-lg">Сброс</a>
+                        </div>
+                    </div>
+                </form>
+            </div>
+            <div class="overflow-x-auto">
+                <table class="min-w-full divide-y divide-gray-200">
+                    <thead class="bg-gray-50">
+                        <tr>
+                            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Поставщик</th>
+                            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Сендер</th>
+                            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Страна</th>
+                            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Оператор</th>
+                            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Пример SMS</th>
+                            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Кол-во</th>
+                            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Действие</th>
+                        </tr>
+                    </thead>
+                    <tbody class="bg-white divide-y divide-gray-200">
+                        {% for row in orphan_traffic_data %}
+                        <tr>
+                            <td class="px-6 py-4 whitespace-nowrap">{{ row.provider_name }}</td>
+                            <td class="px-6 py-4 whitespace-nowrap">{{ row.source_addr }}</td>
+                            <td class="px-6 py-4 whitespace-nowrap">{{ row.country_name }}</td>
+                            <td class="px-6 py-4 whitespace-nowrap">{{ row.operator_name or 'N/A' }}</td>
+                            <td class="px-6 py-4 max-w-xs truncate"><code title="{{ row.sample_text }}">{{ row.sample_text }}</code></td>
+                            <td class="px-6 py-4"><span class="px-2 py-1 text-xs font-semibold rounded-full bg-blue-100 text-blue-800">{{ row.sms_count }}</span></td>
+                            <td class="px-6 py-4"><a href="/tools/orphan-numbers-detail?provider_id={{ row.provider_id }}&source_addr={{ row.source_addr }}&country_id={{ row.country_id }}{% if row.operator_id %}&operator_id={{ row.operator_id }}{% endif %}" class="text-indigo-600 hover:text-indigo-900">Посмотреть номера</a></td>
+                        </tr>
+                        {% else %}
+                        <tr><td colspan="7" class="text-center py-8 text-gray-500">Нет данных для анализа по заданным фильтрам.</td></tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+            {% if ot_pagination.total_pages > 1 %}
+            <div class="mt-6 flex items-center justify-between">
+                <div class="text-sm text-gray-700">Показано с <span class="font-medium">{{ (ot_pagination.current_page - 1) * 20 + 1 }}</span> по <span class="font-medium">{{ (ot_pagination.current_page - 1) * 20 + orphan_traffic_data|length }}</span> из <span class="font-medium">{{ ot_pagination.total_rows }}</span> результатов</div>
+                <nav class="isolate inline-flex -space-x-px rounded-md shadow-sm">
+                    {% set query_string = "tab=orphan-traffic-pane&ot_search_sender=" ~ (ot_filters.search_sender or '') ~ "&ot_provider_id=" ~ (ot_filters.provider_id or '') ~ "&ot_country_id=" ~ (ot_filters.country_id or '') %}
+                    <a href="?ot_page={{ ot_pagination.current_page - 1 }}&{{ query_string }}" class="relative inline-flex items-center rounded-l-md px-2 py-2 text-gray-400 ring-1 ring-inset ring-gray-300 hover:bg-gray-50 {% if ot_pagination.current_page == 1 %}pointer-events-none opacity-50{% endif %}"><i class="fas fa-chevron-left h-5 w-5"></i></a>
+                    {% set start_page = [1, ot_pagination.current_page - 2] | max %}{% set end_page = [ot_pagination.total_pages, ot_pagination.current_page + 2] | min %}
+                    {% if start_page > 1 %}<a href="?ot_page=1&{{ query_string }}" class="relative inline-flex items-center px-4 py-2 text-sm font-semibold text-gray-900 ring-1 ring-inset ring-gray-300 hover:bg-gray-50">1</a>{% if start_page > 2 %}<span class="relative inline-flex items-center px-4 py-2 text-sm font-semibold text-gray-700 ring-1 ring-inset ring-gray-300">...</span>{% endif %}{% endif %}
+                    {% for i in range(start_page, end_page + 1) %}<a href="?ot_page={{ i }}&{{ query_string }}" class="relative inline-flex items-center px-4 py-2 text-sm font-semibold {% if i == ot_pagination.current_page %}bg-indigo-600 text-white{% else %}text-gray-900 ring-1 ring-inset ring-gray-300 hover:bg-gray-50{% endif %}">{{ i }}</a>{% endfor %}
+                    {% if end_page < ot_pagination.total_pages %}{% if end_page < ot_pagination.total_pages - 1 %}<span class="relative inline-flex items-center px-4 py-2 text-sm font-semibold text-gray-700 ring-1 ring-inset ring-gray-300">...</span>{% endif %}<a href="?ot_page={{ ot_pagination.total_pages }}&{{ query_string }}" class="relative inline-flex items-center px-4 py-2 text-sm font-semibold text-gray-900 ring-1 ring-inset ring-gray-300 hover:bg-gray-50">{{ ot_pagination.total_pages }}</a>{% endif %}
+                    <a href="?ot_page={{ ot_pagination.current_page + 1 }}&{{ query_string }}" class="relative inline-flex items-center rounded-r-md px-2 py-2 text-gray-400 ring-1 ring-inset ring-gray-300 hover:bg-gray-50 {% if ot_pagination.current_page >= ot_pagination.total_pages %}pointer-events-none opacity-50{% endif %}"><i class="fas fa-chevron-right h-5 w-5"></i></a>
+                </nav>
+            </div>
+            {% endif %}
+        </div>
+        
+        <div class="tab-pane fade-scale p-4 bg-white rounded-lg shadow-sm" id="api-stats-pane" role="tabpanel">
+            <h3 class="text-xl font-semibold mb-4">Статистика по API ключу</h3>
+            <p class="text-gray-500 mb-6">Эта статистика также учитывает выбранный вверху диапазон дат.</p>
+            <div class="bg-gray-50 p-6 rounded-lg mb-6">
+                <form method="get" action="/tools" id="apiKeyFilterForm">
+                    <input type="hidden" name="tab" value="api-stats-pane"><input type="hidden" name="start_date_str" value="{{ start_date_str }}"><input type="hidden" name="end_date_str" value="{{ end_date_str }}">
+                    <div class="grid grid-cols-1 md:grid-cols-12 gap-4 items-end">
+                        <div class="md:col-span-9"><label for="api_key_str" class="block text-sm font-medium text-gray-700 mb-1">API ключ</label><input type="text" name="api_key_str" id="api_key_str" class="w-full px-4 py-2 border border-gray-300 rounded-lg" value="{{ selected_key_str or '' }}" placeholder="Введите API ключ..."></div>
+                        <div class="md:col-span-3"><button type="submit" class="w-full bg-blue-600 hover:bg-blue-700 text-white py-2 px-4 rounded-lg">Показать по ключу</button></div>
+                    </div>
+                </form>
+            </div>
+            {% if error_api_stats %}<div class="p-4 mb-4 text-sm text-red-700 bg-red-100 rounded-lg">{{ error_api_stats }}</div>{% elif api_stats %}<div class="border-t pt-6"><div class="border-b border-gray-200 pb-4 mb-6"><h4 class="text-lg font-medium">Результаты для ключа: <span class="text-blue-600">{{ selected_key.description or selected_key.key }}</span></h4></div><div class="mb-8"><h5 class="text-lg font-medium">Всего успешных SMS: <span class="px-3 py-1 text-base font-semibold rounded-full bg-green-100 text-green-800">{{ api_stats.total_sms }}</span></h5></div><div><h5 class="text-lg font-medium mb-4">Статистика по сервисам</h5><div class="overflow-x-auto"><table class="min-w-full divide-y divide-gray-200"><thead class="bg-gray-50"><tr><th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Сервис</th><th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Количество SMS</th></tr></thead><tbody class="bg-white divide-y divide-gray-200">{% for service in api_stats.service_breakdown %}<tr><td class="px-6 py-4">{{ service.name }}</td><td class="px-6 py-4">{{ service.sms_count }}</td></tr>{% else %}<tr><td colspan="2" class="text-center py-4 text-gray-500">Нет данных за выбранный период.</td></tr>{% endfor %}</tbody></table></div></div></div>{% endif %}
+        </div>
+
+        <div class="tab-pane fade-scale p-4 bg-white rounded-lg shadow-sm" id="tester-pane" role="tabpanel">
+            <h3 class="text-xl font-semibold mb-4">Ручной Тестер API</h3>
+            <div class="bg-gray-50 p-6 rounded-lg mb-6">
+                <h4 class="text-lg font-medium mb-4">1. Получение номера</h4>
+                <div class="mb-4"><label for="apiKeyTester" class="block text-sm font-medium text-gray-700 mb-1">API Ключ</label><input type="text" class="w-full px-4 py-2 border border-gray-300 rounded-lg" id="apiKeyTester" placeholder="Введите ваш API ключ"></div>
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
+                    <div><label for="serviceCode" class="block text-sm font-medium text-gray-700 mb-1">Сервис (код)</label><input type="text" class="w-full px-4 py-2 border border-gray-300 rounded-lg" id="serviceCode" placeholder="Например, tg или ot"></div>
+                    <div><label for="countryId" class="block text-sm font-medium text-gray-700 mb-1">Страна</label><select class="w-full px-4 py-2 border border-gray-300 rounded-lg" id="countryId"><option selected disabled>Выберите страну...</option>{% for country in countries %}<option value="{{ country.id }}">{{ country.name }} ({{ country.iso_code }})</option>{% endfor %}</select></div>
+                </div>
+                <button id="getNumberBtn" class="bg-blue-600 hover:bg-blue-700 text-white py-2 px-4 rounded-lg">Получить номер</button>
+            </div>
+            <div class="bg-gray-50 p-6 rounded-lg mb-6">
+                <h4 class="text-lg font-medium mb-4">2. Активная сессия</h4>
+                <div class="space-y-3">
+                    <div><strong>ID Сессии:</strong> <span id="sessionId" class="font-mono text-gray-600">--</span></div>
+                    <div><strong>Номер:</strong> <span id="phoneNumber" class="font-mono text-gray-600">--</span></div>
+                    <div><strong>Статус:</strong> <span id="statusText" class="font-mono text-gray-600">Ожидание...</span></div><hr>
+                    <div><strong>Извлеченный код:</strong> <span id="smsCode" class="font-mono text-gray-600">--</span></div>
+                </div>
+            </div>
+            <div class="bg-gray-50 p-6 rounded-lg flex justify-between items-center">
+                <button id="checkStatusBtn" class="bg-sky-500 hover:bg-sky-600 text-white py-2 px-4 rounded-lg" disabled>Проверить SMS</button>
+                <div class="space-x-2">
+                    <button id="setStatus6Btn" class="bg-green-500 hover:bg-green-600 text-white py-2 px-4 rounded-lg" disabled>Завершить (6)</button>
+                    <button id="setStatus8Btn" class="bg-red-500 hover:bg-red-600 text-white py-2 px-4 rounded-lg" disabled>Отменить (8)</button>
+                </div>
+            </div>
+        </div>
+        
+        <div class="tab-pane fade-scale p-4 bg-white rounded-lg shadow-sm" id="bulk-limits-pane" role="tabpanel">
+            <h3 class="text-xl font-semibold mb-4">Массовая установка лимитов</h3>
+            <p class="text-gray-500 mb-6">Выберите сервисы, провайдера, страну и установите суточный лимит. Существующие лимиты для этих комбинаций будут обновлены, а отсутствующие - созданы.</p>
+            <div class="bg-gray-50 p-6 rounded-lg">
+                <form action="/tools/bulk-set-limits" method="post">
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-x-8 gap-y-6">
+                        <div>
+                            <div class="flex justify-between items-center mb-1"><label for="service_ids" class="block text-sm font-medium text-gray-700">Сервисы</label><button type="button" id="toggle-all-services" class="text-xs text-indigo-600 hover:text-indigo-800">Выбрать все</button></div>
+                            <select name="service_ids" id="service_ids" multiple required>{% for service in all_services %}<option value="{{ service.id }}">{{ service.name }}</option>{% endfor %}</select>
+                        </div>
+                        <div class="space-y-6">
+                            <div><label for="provider_id_bulk" class="block text-sm font-medium text-gray-700 mb-1">Провайдер</label><select name="provider_id" id="provider_id_bulk" class="w-full px-4 py-2 border border-gray-300 rounded-lg" required>{% for provider in providers %}<option value="{{ provider.id }}">{{ provider.name }}</option>{% endfor %}</select></div>
+                            <div><label for="country_id_bulk" class="block text-sm font-medium text-gray-700 mb-1">Страна</label><select name="country_id" id="country_id_bulk" class="w-full px-4 py-2 border border-gray-300 rounded-lg" required>{% for country in countries %}<option value="{{ country.id }}">{{ country.name }}</option>{% endfor %}</select></div>
+                            <div><label for="daily_limit" class="block text-sm font-medium text-gray-700 mb-1">Суточный лимит (кол-во SMS)</label><input type="number" name="daily_limit" id="daily_limit" class="w-full px-4 py-2 border border-gray-300 rounded-lg" placeholder="500" required></div>
+                            <div><button type="submit" class="w-full bg-blue-600 hover:bg-blue-700 text-white py-2 px-4 rounded-lg">Установить лимиты</button></div>
+                        </div>
+                    </div>
+                </form>
+            </div>
+        </div>
+
+        <div class="tab-pane fade-scale p-4 bg-white rounded-lg shadow-sm" id="importer-pane" role="tabpanel">
+            <h3 class="text-xl font-semibold mb-4">Импорт номеров из файла</h3><p class="text-gray-500 mb-6">Выберите текстовый файл (.txt), где каждый номер находится на новой строке.</p><div class="bg-gray-50 p-6 rounded-lg"><form action="/importer" method="post" enctype="multipart/form-data"><div class="mb-4"><label class="block text-sm font-medium text-gray-700 mb-1">Файл с номерами (.txt)</label><input type="file" name="file" class="w-full text-sm text-gray-900 border border-gray-300 rounded-lg cursor-pointer bg-gray-50 focus:outline-none" required></div><div class="mb-4"><label class="block text-sm font-medium text-gray-700 mb-1">Провайдер</label><select name="provider_id" class="w-full px-4 py-2 border border-gray-300 rounded-lg" required>{% for provider in providers %}<option value="{{ provider.id }}">{{ provider.name }}</option>{% endfor %}</select></div><div class="mb-4"><label class="block text-sm font-medium text-gray-700 mb-1">Страна</label><select name="country_id" class="w-full px-4 py-2 border border-gray-300 rounded-lg" required>{% for country in countries %}<option value="{{ country.id }}">{{ country.name }}</option>{% endfor %}</select></div><div class="mb-4"><label class="block text-sm font-medium text-gray-700 mb-1">Оператор (необязательно)</label><select name="operator_id" class="w-full px-4 py-2 border border-gray-300 rounded-lg"><option value="">-- Не указывать --</option>{% for op in operators %}<option value="{{ op.id }}">{{ op.name }} ({{ op.country.name }}, {{ op.provider.name }})</option>{% endfor %}</select></div><button type="submit" class="w-full md:w-auto bg-blue-600 hover:bg-blue-700 text-white py-2 px-4 rounded-lg">Загрузить</button></form></div>
+        </div>
+
+        <div class="tab-pane fade-scale p-4 bg-white rounded-lg shadow-sm" id="generator-pane" role="tabpanel">
+            <h3 class="text-xl font-semibold mb-4">Генератор номеров по маскам</h3>
+            <p class="text-gray-500 mb-6">Введите одну или несколько масок номеров, каждая с новой строки. Используйте 'x' (маленькую) для обозначения случайных цифр. Например: <code>992918216xxx</code></p>
+            <div class="bg-gray-50 p-6 rounded-lg">
+                <form action="/generator" method="post">
+                    <div class="mb-4">
+                        <label for="generator-masks" class="block text-sm font-medium text-gray-700 mb-1">Маски номеров (каждая с новой строки)</label>
+                        <textarea class="w-full px-4 py-2 border border-gray-300 rounded-lg font-mono" id="generator-masks" name="masks" rows="10" placeholder="992918216xxx&#10;992800086xxx&#10;992173223xxx" required></textarea>
+                    </div>
+                    <div class="mb-4">
+                        <label for="generator-quantity" class="block text-sm font-medium text-gray-700 mb-1">Количество для генерации (на каждую маску)</label>
+                        <input type="number" class="w-full px-4 py-2 border border-gray-300 rounded-lg" id="generator-quantity" name="quantity" value="100" required>
+                    </div>
+                    <div class="mb-4">
+                        <label class="block text-sm font-medium text-gray-700 mb-1">Провайдер</label>
+                        <select name="provider_id" class="w-full px-4 py-2 border border-gray-300 rounded-lg" required>
+                            {% for provider in providers %}<option value="{{ provider.id }}">{{ provider.name }}</option>{% endfor %}
+                        </select>
+                    </div>
+                    <div class="mb-4">
+                        <label class="block text-sm font-medium text-gray-700 mb-1">Страна</label>
+                        <select name="country_id" class="w-full px-4 py-2 border border-gray-300 rounded-lg" required>
+                            {% for country in countries %}<option value="{{ country.id }}">{{ country.name }}</option>{% endfor %}
+                        </select>
+                    </div>
+                    <div class="mb-4">
+                        <label class="block text-sm font-medium text-gray-700 mb-1">Оператор (необязательно)</label>
+                        <select name="operator_id" class="w-full px-4 py-2 border border-gray-300 rounded-lg">
+                            <option value="">-- Не указывать --</option>
+                            {% for op in operators %}<option value="{{ op.id }}">{{ op.name }} ({{ op.country.name }}, {{ op.provider.name }})</option>{% endfor %}
+                        </select>
+                    </div>
+                    <button type="submit" class="w-full md:w-auto bg-blue-600 hover:bg-blue-700 text-white py-2 px-4 rounded-lg">Сгенерировать</button>
+                </form>
+            </div>
+        </div>
+
+        <div class="tab-pane fade-scale p-4 bg-white rounded-lg shadow-sm" id="manager-pane" role="tabpanel">
+            <h3 class="text-xl font-semibold mb-4">Массовое управление номерами</h3>
+            <div class="bg-gray-50 p-6 rounded-lg mb-6">
+                <h4 class="text-lg font-medium mb-4">Массовое удаление номеров</h4><p class="text-gray-500 mb-4">Выберите критерии для удаления. <strong class="text-red-600">Это действие необратимо!</strong></p>
+                <form action="/manager/delete" method="post" onsubmit="return confirm('Вы уверены, что хотите удалить эти номера?');">
+                    <div class="grid grid-cols-1 md:grid-cols-4 gap-4 items-end">
+                        <div><label class="block text-sm font-medium text-gray-700 mb-1">Провайдер</label><select name="provider_id" class="w-full px-4 py-2 border border-gray-300 rounded-lg"><option value="">-- Любой --</option>{% for provider in providers %}<option value="{{ provider.id }}">{{ provider.name }}</option>{% endfor %}</select></div>
+                        <div><label class="block text-sm font-medium text-gray-700 mb-1">Страна</label><select name="country_id" class="w-full px-4 py-2 border border-gray-300 rounded-lg"><option value="">-- Любая --</option>{% for country in countries %}<option value="{{ country.id }}">{{ country.name }}</option>{% endfor %}</select></div>
+                        <div><label class="block text-sm font-medium text-gray-700 mb-1">Статус</label><select name="is_in_use" class="w-full px-4 py-2 border border-gray-300 rounded-lg"><option value="">-- Любой --</option><option value="true">Занят</option><option value="false">Свободен</option></select></div>
+                        <div><button type="submit" class="w-full bg-red-600 hover:bg-red-700 text-white py-2 px-4 rounded-lg">Удалить</button></div>
+                    </div>
+                </form>
+            </div>
+            <div class="bg-gray-50 p-6 rounded-lg">
+                <h4 class="text-lg font-medium mb-4">Перемешивание номеров (Shuffle)</h4><p class="text-gray-500 mb-4">Эта функция меняет порядок выдачи номеров случайным образом.</p>
+                <form action="/manager/shuffle" method="post" onsubmit="return confirm('Вы уверены, что хотите перемешать все номера?');">
+                    <button type="submit" class="bg-amber-500 hover:bg-amber-600 text-white py-2 px-4 rounded-lg">Перемешать все номера</button>
+                </form>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/tom-select@2.2.2/dist/js/tom-select.complete.min.js"></script>
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+    const serviceSelectElement = document.getElementById('service_ids');
+    if (serviceSelectElement) {
+        const tom = new TomSelect(serviceSelectElement, { plugins: ['remove_button'], create: false, placeholder: 'Выберите один или несколько сервисов...'});
+        const toggleBtn = document.getElementById('toggle-all-services');
+        if (toggleBtn) {
+            toggleBtn.addEventListener('click', () => {
+                const totalOptions = Object.keys(tom.options).length, selectedItems = tom.items.length;
+                if (selectedItems < totalOptions) { tom.setValue(Object.keys(tom.options)); toggleBtn.textContent = 'Очистить'; } 
+                else { tom.clear(); toggleBtn.textContent = 'Выбрать все'; }
+            });
+        }
+    }
+    
+    const tabs = document.querySelectorAll('.nav-link'), tabPanes = document.querySelectorAll('.tab-pane'), mainTabInput = document.getElementById('mainTabInput');
+    tabs.forEach(tab => {
+        tab.addEventListener('click', function(event) {
+            event.preventDefault();
+            tabs.forEach(t => t.classList.remove('active'));
+            tabPanes.forEach(pane => pane.classList.remove('show', 'active'));
+            this.classList.add('active');
+            const targetPane = document.querySelector(this.getAttribute('data-bs-target'));
+            targetPane.classList.add('show', 'active');
+            if (mainTabInput) { mainTabInput.value = targetPane.id; }
+        });
+    });
+
+    const urlParams = new URLSearchParams(window.location.search), success = urlParams.get('success'), error = urlParams.get('error'), requestedTab = urlParams.get('tab'), finalTabId = (requestedTab || 'stats-pane');
+    if (success || error) {
+        const alertHtml = `<div class="p-4 mb-4 text-sm rounded-lg ${success ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}" role="alert">${success || error}<button type="button" class="float-right font-bold" onclick="this.parentElement.style.display='none';">×</button></div>`;
+        let targetPane = document.getElementById(finalTabId);
+        if (targetPane) { targetPane.insertAdjacentHTML('afterbegin', alertHtml); }
+    }
+    if (finalTabId) {
+        const tabEl = document.querySelector(`button[data-bs-target="#${finalTabId}"]`);
+        if (tabEl) { tabEl.click(); }
+    }
+    
+    const ctx = document.getElementById('smsActivityChart');
+    if (ctx) {
+        const chartRawLabels = {{ chart_data.labels | tojson }}, chartData = {{ chart_data.data | tojson }};
+        const chartLocalLabels = chartRawLabels.map(utcDateString => new Date(utcDateString).toLocaleDateString('ru-RU', { day: '2-digit', month: '2-digit' }));
+        new Chart(ctx.getContext('2d'), {
+            type: 'bar',
+            data: { labels: chartLocalLabels, datasets: [{ label: 'Количество SMS', data: chartData, backgroundColor: 'rgba(59, 130, 246, 0.5)', borderColor: 'rgba(59, 130, 246, 1)', borderWidth: 1, borderRadius: 5 }] },
+            options: {
+                scales: { y: { beginAtZero: true, grid: { drawBorder: false } }, x: { grid: { display: false } } },
+                responsive: true, maintainAspectRatio: false,
+                plugins: { legend: { display: false }, tooltip: { backgroundColor: '#1f2937', titleFont: { size: 14, family: 'Inter' }, bodyFont: { size: 12, family: 'Inter' }, padding: 10, cornerRadius: 5 }}
+            }
+        });
+    }
+
+    const getNumberBtn = document.getElementById('getNumberBtn');
+    if (getNumberBtn) {
+        const checkStatusBtn = document.getElementById('checkStatusBtn'), setStatus6Btn = document.getElementById('setStatus6Btn'), setStatus8Btn = document.getElementById('setStatus8Btn'),
+              apiKeyInput = document.getElementById('apiKeyTester'), serviceCodeInput = document.getElementById('serviceCode'), countryIdSelect = document.getElementById('countryId'),
+              sessionIdSpan = document.getElementById('sessionId'), phoneNumberSpan = document.getElementById('phoneNumber'), statusTextSpan = document.getElementById('statusText'), smsCodeSpan = document.getElementById('smsCode');
+        let currentSessionId = null, statusInterval = null;
+        const resetState = () => { stopPolling(); currentSessionId = null; sessionIdSpan.textContent = '--'; phoneNumberSpan.textContent = '--'; statusTextSpan.textContent = 'Ожидание...'; smsCodeSpan.textContent = '--'; disableControls(); };
+        const enableControls = () => { checkStatusBtn.disabled = false; setStatus6Btn.disabled = false; setStatus8Btn.disabled = false; };
+        const disableControls = () => { checkStatusBtn.disabled = true; setStatus6Btn.disabled = true; setStatus8Btn.disabled = true; };
+        const stopPolling = () => { if (statusInterval) { clearInterval(statusInterval); statusInterval = null; } };
+        const startPolling = () => { stopPolling(); statusInterval = setInterval(checkStatus, 7000); };
+        async function setStatus(status) { if (!currentSessionId) return; stopPolling(); const url = `/stubs/handler_api.php?action=setStatus&api_key=${apiKeyInput.value.trim()}&id=${currentSessionId}&status=${status}`; try { const r = await fetch(url), t = await r.text(); statusTextSpan.textContent = `Операция завершена: ${t}`; disableControls(); } catch (e) { statusTextSpan.textContent = 'Сетевая ошибка'; } }
+        async function checkStatus() { if (!currentSessionId) return; const url = `/stubs/handler_api.php?action=getStatus&api_key=${apiKeyInput.value.trim()}&id=${currentSessionId}`; try { const r = await fetch(url), t = await r.text(); if (t.startsWith('STATUS_OK:')) { const [, code] = t.split(':'); statusTextSpan.textContent = 'Успех! Код получен.'; smsCodeSpan.textContent = code; stopPolling(); } else if (t === 'STATUS_CANCEL') { statusTextSpan.textContent = 'Сессия отменена.'; stopPolling(); disableControls(); } else { statusTextSpan.textContent = `${t} (${new Date().toLocaleTimeString()})`; } } catch(e) { statusTextSpan.textContent = 'Сетевая ошибка'; } }
+        getNumberBtn.addEventListener('click', async () => {
+            const apiKey = apiKeyInput.value.trim(), service = serviceCodeInput.value.trim(), country = countryIdSelect.value;
+            if (!apiKey || !service || country === 'Выберите страну...') { alert('Пожалуйста, заполните все поля!'); return; }
+            resetState(); statusTextSpan.textContent = 'Запрашиваю номер...'; const url = `/stubs/handler_api.php?action=getNumber&api_key=${apiKey}&service=${service}&country=${country}`;
+            try {
+                const r = await fetch(url), t = await r.text();
+                if (t.startsWith('ACCESS_NUMBER:')) { const [, sid, phone] = t.split(':'); currentSessionId = sid; sessionIdSpan.textContent = sid; phoneNumberSpan.textContent = `+${phone}`; statusTextSpan.textContent = 'Номер получен, ожидание SMS...'; enableControls(); startPolling(); } 
+                else { statusTextSpan.textContent = `Ошибка: ${t}`; }
+            } catch (e) { statusTextSpan.textContent = 'Сетевая ошибка'; }
+        });
+        checkStatusBtn.addEventListener('click', checkStatus); setStatus6Btn.addEventListener('click', () => setStatus(6)); setStatus8Btn.addEventListener('click', () => setStatus(8));
+    }
+});
+</script>
+</body>
+</html>

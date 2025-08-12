@@ -1,15 +1,18 @@
-FROM python:3.10-slim-bullseye
+# Этап 1: Используем официальный базовый образ Python 3.10
+FROM python:3.10-slim
+
+# Этап 2: Устанавливаем рабочую директорию внутри контейнера
 WORKDIR /app
-RUN pip install --no-cache-dir --upgrade pip
+
+# Этап 3: Копируем файл с зависимостями в контейнер
 COPY requirements.txt .
+
+# Этап 4: Устанавливаем все Python-зависимости
 RUN pip install --no-cache-dir -r requirements.txt
-COPY alembic.ini .
-COPY alembic /app/alembic
-COPY seed_scripts /app/seed_scripts
-COPY data /app/data
-COPY ./src /app/src
 
-# --- НОВОЕ: Копируем папку с HTML-шаблонами внутрь контейнера ---
-COPY templates /app/templates
+# Этап 5: Копируем весь остальной код проекта в контейнер
+COPY . .
 
+# Этап 6: Указываем команду, которая будет запускаться при старте контейнера
+# Uvicorn будет слушать на всех сетевых интерфейсах (0.0.0.0) на порту 8000
 CMD ["uvicorn", "src.main:app", "--host", "0.0.0.0", "--port", "8000"]

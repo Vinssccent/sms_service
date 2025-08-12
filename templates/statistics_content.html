@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Статистика</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <style>
+        .card .border-left-primary { border-left: .25rem solid #4e73df!important; }
+        .card .border-left-success { border-left: .25rem solid #1cc88a!important; }
+        .card .border-left-danger { border-left: .25rem solid #e74a3b!important; }
+    </style>
+</head>
+<body>
+<div class="container-fluid p-4">
+    <h1 class="my-4">Статистика за сегодня</h1>
+     <p>Данные обновляются при каждой загрузке страницы.</p>
+
+    <!-- Блок с ключевыми метриками -->
+    <div class="row">
+        <div class="col-xl-3 col-md-6 mb-4">
+            <div class="card border-left-primary shadow h-100 py-2">
+                <div class="card-body">
+                    <div class="row no-gutters align-items-center">
+                        <div class="col mr-2">
+                            <div class="text-xs fw-bold text-primary text-uppercase mb-1">
+                                SMS за сегодня</div>
+                            <div class="h5 mb-0 fw-bold text-gray-800">{{ stats.total_sms_today }}</div>
+                        </div>
+                        <div class="col-auto">
+                            <i class="fas fa-comment-sms fa-2x text-secondary"></i>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="col-xl-3 col-md-6 mb-4">
+            <div class="card border-left-success shadow h-100 py-2">
+                <div class="card-body">
+                    <div class="row no-gutters align-items-center">
+                        <div class="col mr-2">
+                            <div class="text-xs fw-bold text-success text-uppercase mb-1">
+                                Номеров свободно</div>
+                            <div class="h5 mb-0 fw-bold text-gray-800">{{ stats.numbers_free }}</div>
+                        </div>
+                        <div class="col-auto">
+                            <i class="fas fa-phone-alt fa-2x text-secondary"></i>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="col-xl-3 col-md-6 mb-4">
+            <div class="card border-left-danger shadow h-100 py-2">
+                <div class="card-body">
+                    <div class="row no-gutters align-items-center">
+                        <div class="col mr-2">
+                            <div class="text-xs fw-bold text-danger text-uppercase mb-1">
+                                Номеров занято</div>
+                            <div class="h5 mb-0 fw-bold text-gray-800">{{ stats.numbers_in_use }}</div>
+                        </div>
+                        <div class="col-auto">
+                            <i class="fas fa-phone-slash fa-2x text-secondary"></i>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Блок с таблицами -->
+    <div class="row">
+        <div class="col-lg-6">
+            <div class="card shadow mb-4">
+                <div class="card-header py-3">
+                    <h6 class="m-0 fw-bold text-primary">Топ сервисов (сегодня)</h6>
+                </div>
+                <div class="card-body">
+                    <div class="table-responsive">
+                        <table class="table table-bordered" width="100%" cellspacing="0">
+                            <thead>
+                                <tr>
+                                    <th>Сервис</th>
+                                    <th>Кол-во SMS</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {% for service in stats.top_services %}
+                                <tr>
+                                    <td>{{ service.name }}</td>
+                                    <td>{{ service.count }}</td>
+                                </tr>
+                                {% else %}
+                                <tr><td colspan="2" class="text-center">Нет данных</td></tr>
+                                {% endfor %}
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="col-lg-6">
+            <div class="card shadow mb-4">
+                <div class="card-header py-3">
+                    <h6 class="m-0 fw-bold text-primary">Нагрузка на провайдеров (сегодня)</h6>
+                </div>
+                <div class="card-body">
+                     <div class="table-responsive">
+                        <table class="table table-bordered" width="100%" cellspacing="0">
+                            <thead>
+                                <tr>
+                                    <th>Провайдер</th>
+                                    <th>Кол-во SMS</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {% for provider in stats.provider_load %}
+                                <tr>
+                                    <td>{{ provider.name }}</td>
+                                    <td>{{ provider.count }}</td>
+                                </tr>
+                                {% else %}
+                                <tr><td colspan="2" class="text-center">Нет данных</td></tr>
+                                {% endfor %}
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+</body>
+</html>

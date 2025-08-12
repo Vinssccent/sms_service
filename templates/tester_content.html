@@ -1,0 +1,219 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Ручной Тестер API</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <style>
+        body { background-color: #f8f9fa; }
+        .container { max-width: 700px; }
+        .card { margin-top: 1rem; }
+    </style>
+</head>
+<body>
+    <div class="container mt-5">
+        <h1 class="mb-4">Тестер API Активаций</h1>
+
+        <!-- Форма для получения номера -->
+        <div class="card">
+            <div class="card-body">
+                <h5 class="card-title">1. Получение номера</h5>
+                <div class="mb-3">
+                    <label for="apiKey" class="form-label">API Ключ</label>
+                    <input type="text" class="form-control" id="apiKey" placeholder="Введите ваш API ключ">
+                </div>
+                <div class="row">
+                    <div class="col-md-6 mb-3">
+                        <label for="serviceCode" class="form-label">Сервис (код)</label>
+                        <input type="text" class="form-control" id="serviceCode" placeholder="Например, tg или full">
+                    </div>
+                    <div class="col-md-6 mb-3">
+                        <label for="countryId" class="form-label">Страна</label>
+                        <select class="form-select" id="countryId">
+                            <option selected disabled>Выберите страну...</option>
+                            {% for country in countries %}
+                                <option value="{{ country.id }}">{{ country.name }} ({{ country.iso_code }})</option>
+                            {% endfor %}
+                        </select>
+                    </div>
+                </div>
+                <button id="getNumberBtn" class="btn btn-primary">Получить номер</button>
+            </div>
+        </div>
+
+        <!-- Информация об активации -->
+        <div class="card">
+            <div class="card-body">
+                <h5 class="card-title">2. Активная сессия</h5>
+                <div class="mb-2"><strong>ID Сессии:</strong> <span id="sessionId" class="text-muted">--</span></div>
+                <div class="mb-2"><strong>Номер:</strong> <span id="phoneNumber" class="text-muted">--</span></div>
+                <div class="mb-2"><strong>Статус:</strong> <span id="statusText" class="text-muted">Ожидание...</span></div>
+                <hr>
+                <div class="mb-2"><strong>Полный текст SMS:</strong></div>
+                <pre id="smsText" class="bg-light p-2 rounded">Нет сообщений</pre>
+                 <div class="mb-2"><strong>Извлеченный код:</strong> <span id="smsCode" class="text-muted">--</span></div>
+            </div>
+        </div>
+
+        <!-- Кнопки управления -->
+         <div class="card">
+            <div class="card-body d-flex justify-content-between">
+                <button id="checkStatusBtn" class="btn btn-info" disabled>Проверить SMS</button>
+                <div>
+                    <button id="setStatus6Btn" class="btn btn-success" disabled>Завершить (6)</button>
+                    <button id="setStatus8Btn" class="btn btn-danger" disabled>Отменить (8)</button>
+                </div>
+            </div>
+        </div>
+
+    </div>
+
+    <script>
+        const getNumberBtn = document.getElementById('getNumberBtn');
+        const checkStatusBtn = document.getElementById('checkStatusBtn');
+        const setStatus6Btn = document.getElementById('setStatus6Btn');
+        const setStatus8Btn = document.getElementById('setStatus8Btn');
+
+        const apiKeyInput = document.getElementById('apiKey');
+        const serviceCodeInput = document.getElementById('serviceCode');
+        const countryIdSelect = document.getElementById('countryId');
+
+        const sessionIdSpan = document.getElementById('sessionId');
+        const phoneNumberSpan = document.getElementById('phoneNumber');
+        const statusTextSpan = document.getElementById('statusText');
+        const smsTextSpan = document.getElementById('smsText');
+        const smsCodeSpan = document.getElementById('smsCode');
+
+        let currentSessionId = null;
+        let statusInterval = null;
+        
+        // Получение номера
+        getNumberBtn.addEventListener('click', async () => {
+            const apiKey = apiKeyInput.value.trim();
+            const service = serviceCodeInput.value.trim();
+            const country = countryIdSelect.value;
+
+            if (!apiKey || !service || !country) {
+                alert('Пожалуйста, заполните все поля!');
+                return;
+            }
+
+            resetState();
+            statusTextSpan.textContent = 'Запрашиваю номер...';
+            const url = `/stubs/handler_api.php?action=getNumber&api_key=${apiKey}&service=${service}&country=${country}`;
+            
+            try {
+                const response = await fetch(url);
+                const text = await response.text();
+                
+                if (text.startsWith('ACCESS_NUMBER:')) {
+                    const [, sid, phone] = text.split(':');
+                    currentSessionId = sid;
+                    sessionIdSpan.textContent = sid;
+                    phoneNumberSpan.textContent = `+${phone}`;
+                    statusTextSpan.textContent = 'Номер получен, ожидание SMS...';
+                    enableControls();
+                    startPolling();
+                } else {
+                    statusTextSpan.textContent = `Ошибка: ${text}`;
+                }
+            } catch (e) {
+                statusTextSpan.textContent = 'Сетевая ошибка';
+            }
+        });
+        
+        // Проверка статуса
+        async function checkStatus() {
+            if (!currentSessionId) return;
+            
+            const apiKey = apiKeyInput.value.trim();
+            const url = `/stubs/handler_api.php?action=getStatus&api_key=${apiKey}&id=${currentSessionId}`;
+            
+            try {
+                const response = await fetch(url);
+                const text = await response.text();
+
+                if (text.startsWith('STATUS_OK:')) {
+                    const [, code] = text.split(':');
+                    statusTextSpan.textContent = 'Успех! Код получен.';
+                    smsCodeSpan.textContent = code;
+                    // Также нужно получить полный текст SMS. Для этого придется сделать еще один запрос к БД.
+                    // Для простоты, мы это опускаем, но в админке полный текст будет.
+                    // Чтобы показать полный текст, нужен отдельный API эндпоинт.
+                    // Здесь пока оставим как есть.
+                    stopPolling();
+                } else if (text === 'STATUS_CANCEL') {
+                    statusTextSpan.textContent = 'Сессия отменена.';
+                    stopPolling();
+                    disableControls();
+                } else {
+                    statusTextSpan.textContent = `${text} (${new Date().toLocaleTimeString()})`;
+                }
+
+            } catch(e) {
+                 statusTextSpan.textContent = 'Сетевая ошибка при проверке статуса';
+            }
+        }
+        
+        // Установка статуса
+        async function setStatus(status) {
+            if (!currentSessionId) return;
+            
+            stopPolling();
+            const apiKey = apiKeyInput.value.trim();
+            const url = `/stubs/handler_api.php?action=setStatus&api_key=${apiKey}&id=${currentSessionId}&status=${status}`;
+            
+            try {
+                 const response = await fetch(url);
+                 const text = await response.text();
+                 statusTextSpan.textContent = `Операция завершена: ${text}`;
+                 disableControls();
+            } catch (e) {
+                 statusTextSpan.textContent = 'Сетевая ошибка при установке статуса';
+            }
+        }
+        
+        checkStatusBtn.addEventListener('click', checkStatus);
+        setStatus6Btn.addEventListener('click', () => setStatus(6));
+        setStatus8Btn.addEventListener('click', () => setStatus(8));
+
+        // Вспомогательные функции
+        function startPolling() {
+            stopPolling();
+            statusInterval = setInterval(checkStatus, 7000); // Опрашивать каждые 7 секунд
+        }
+        
+        function stopPolling() {
+            if (statusInterval) {
+                clearInterval(statusInterval);
+                statusInterval = null;
+            }
+        }
+
+        function resetState() {
+            stopPolling();
+            currentSessionId = null;
+            sessionIdSpan.textContent = '--';
+            phoneNumberSpan.textContent = '--';
+            statusTextSpan.textContent = 'Ожидание...';
+            smsTextSpan.textContent = 'Нет сообщений';
+            smsCodeSpan.textContent = '--';
+            disableControls();
+        }
+        
+        function enableControls() {
+            checkStatusBtn.disabled = false;
+            setStatus6Btn.disabled = false;
+            setStatus8Btn.disabled = false;
+        }
+        
+        function disableControls() {
+            checkStatusBtn.disabled = true;
+            setStatus6Btn.disabled = true;
+            setStatus8Btn.disabled = true;
+        }
+
+    </script>
+</body>
+</html>

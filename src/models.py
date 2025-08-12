@@ -1,29 +1,50 @@
+# src/models.py
 # -*- coding: utf-8 -*-
 import uuid
-from sqlalchemy import Column, Integer, String, Boolean, ForeignKey, DateTime, Text, UniqueConstraint, Index
+from sqlalchemy import Column, Integer, String, Boolean, ForeignKey, DateTime, Text, Index, UniqueConstraint, select
 from sqlalchemy.orm import relationship, declarative_base
-from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.sql import func
+from sqlalchemy.ext.hybrid import hybrid_property
+from starlette.requests import Request
 
 Base = declarative_base()
-
-class AllowedSender(Base):
-    __tablename__ = 'allowed_senders'
-    __table_args__ = (UniqueConstraint('name', 'service_id', name='uq_sender_service'),)
-    id = Column(Integer, primary_key=True)
-    name = Column(String, nullable=False, index=True)
-    service_id = Column(Integer, ForeignKey('services.id', ondelete="CASCADE"), nullable=False)
-    service = relationship("Service", back_populates="allowed_senders")
-    def __str__(self): return self.name
 
 class Service(Base):
     __tablename__ = 'services'
     id = Column(Integer, primary_key=True)
     name = Column(String, unique=True, nullable=False)
     code = Column(String(10), unique=True, nullable=False, index=True)
-    allowed_senders = relationship("AllowedSender", back_populates="service", cascade="all, delete-orphan")
+    icon_class = Column(String, nullable=True)
+    daily_limit = Column(Integer, nullable=True, comment="Default daily limit if no specific rule applies")
     sessions = relationship("Session", back_populates="service", cascade="all, delete-orphan")
+    service_limits = relationship("ServiceLimit", back_populates="service", cascade="all, delete-orphan", lazy="selectin")
     def __str__(self): return f"{self.name} ({self.code})"
+    async def __admin_repr__(self, request: Request):
+        count = len(self.service_limits)
+        if count == 0:
+            return self.name
+        rule_word = "rule" if count == 1 else "rules"
+        return f"{self.name} ({count} {rule_word})"
+
+class ServiceLimit(Base):
+    __tablename__ = 'service_limits'
+    id = Column(Integer, primary_key=True)
+    service_id = Column(Integer, ForeignKey('services.id', ondelete="CASCADE"), nullable=False)
+    provider_id = Column(Integer, ForeignKey('providers.id', ondelete="CASCADE"), nullable=False)
+    country_id = Column(Integer, ForeignKey('countries.id', ondelete="CASCADE"), nullable=False)
+    daily_limit = Column(Integer, nullable=False)
+    service = relationship("Service", back_populates="service_limits")
+    provider = relationship("Provider", back_populates="service_limits")
+    country = relationship("Country", back_populates="service_limits")
+    __table_args__ = (
+        UniqueConstraint('service_id', 'provider_id', 'country_id', name='_service_provider_country_uc'),
+        Index('ix_service_limit_lookup', 'service_id', 'provider_id', 'country_id'),
+    )
+    def __str__(self):
+        service_name = self.service.name if self.service else "N/A"
+        provider_name = self.provider.name if self.provider else "N/A"
+        country_name = self.country.name if self.country else "N/A"
+        return f"Limit for {service_name} via {provider_name} in {country_name}: {self.daily_limit}"
 
 class Country(Base):
     __tablename__ = 'countries'
@@ -32,15 +53,22 @@ class Country(Base):
     iso_code = Column(String(10), unique=True, nullable=False, index=True)
     phone_code = Column(String, nullable=False, index=True)
     operators = relationship("Operator", back_populates="country", cascade="all, delete-orphan")
+    service_limits = relationship("ServiceLimit", back_populates="country", cascade="all, delete-orphan")
     def __str__(self): return self.name
+    async def __admin_repr__(self, request: Request):
+        return self.name
 
 class Operator(Base):
     __tablename__ = 'operators'
     id = Column(Integer, primary_key=True)
     name = Column(String, nullable=False, index=True)
     country_id = Column(Integer, ForeignKey('countries.id', ondelete="CASCADE"), nullable=False)
+    provider_id = Column(Integer, ForeignKey('providers.id', ondelete="CASCADE"), nullable=True)
     country = relationship("Country", back_populates="operators")
+    provider = relationship("Provider", back_populates="operators")
     def __str__(self): return self.name
+    async def __admin_repr__(self, request: Request):
+        return self.name
 
 class Provider(Base):
     __tablename__ = 'providers'
@@ -51,8 +79,13 @@ class Provider(Base):
     system_id = Column(String, nullable=False)
     password = Column(String, nullable=False)
     is_active = Column(Boolean, default=True, nullable=False)
+    daily_limit = Column(Integer, nullable=True, comment="Total daily limit for provider across all services/countries")
     phone_numbers = relationship("PhoneNumber", back_populates="provider", cascade="all, delete-orphan")
+    operators = relationship("Operator", back_populates="provider", cascade="all, delete-orphan")
+    service_limits = relationship("ServiceLimit", back_populates="provider", cascade="all, delete-orphan")
     def __str__(self): return self.name
+    async def __admin_repr__(self, request: Request):
+        return self.name
 
 class PhoneNumber(Base):
     __tablename__ = 'phone_numbers'
@@ -69,6 +102,15 @@ class PhoneNumber(Base):
     operator = relationship("Operator")
     sessions = relationship("Session", back_populates="phone_number", cascade="all, delete-orphan")
     def __str__(self): return self.number_str
+
+class PhoneNumberUsage(Base):
+    __tablename__ = 'phone_number_usage'
+    id = Column(Integer, primary_key=True)
+    phone_number_id = Column(Integer, ForeignKey('phone_numbers.id', ondelete="CASCADE"), nullable=False, index=True)
+    service_id = Column(Integer, ForeignKey('services.id', ondelete="CASCADE"), nullable=False, index=True)
+    usage_count = Column(Integer, default=1, nullable=False)
+    last_used_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+    __table_args__ = (Index('ix_phone_service_usage', 'phone_number_id', 'service_id', unique=True),)
 
 class Session(Base):
     __tablename__ = 'sessions'
@@ -90,14 +132,25 @@ class SmsMessage(Base):
     session_id = Column(Integer, ForeignKey('sessions.id', ondelete="CASCADE"), nullable=False)
     source_addr = Column(String, nullable=False, index=True)
     text = Column(Text, nullable=False)
-    code = Column(String(20), nullable=True) # <-- ВОТ ЭТА СТРОКА ПРОПАЛА
+    code = Column(String(20), nullable=True)
     received_at = Column(DateTime(timezone=True), server_default=func.now())
     session = relationship("Session", back_populates="sms_messages")
-    __table_args__ = (
-        Index('ix_sms_code', 'code'),
-    )
+    __table_args__ = (Index('ix_sms_code', 'code'),)
+
     def __str__(self) -> str:
         return f'{self.text[:50]}...' if len(self.text) > 50 else self.text
+
+    @hybrid_property
+    def phone_number(self) -> str | None:
+        return self.session.phone_number_str if self.session else None
+
+    @phone_number.expression
+    def phone_number(cls):
+        return (
+            select(Session.phone_number_str)
+            .where(Session.id == cls.session_id)
+            .scalar_subquery()
+        )
 
 class ApiKey(Base):
     __tablename__ = 'api_keys'
@@ -109,3 +162,29 @@ class ApiKey(Base):
     sessions = relationship("Session", back_populates="api_key", cascade="all, delete-orphan")
     def __str__(self): return self.description or self.key
 
+class Admin(Base):
+    __tablename__ = 'admins'
+    id = Column(Integer, primary_key=True)
+    username = Column(String(50), unique=True, nullable=False)
+    password = Column(String(255), nullable=False)
+    last_login = Column(DateTime)
+    avatar = Column(String(255))
+    def __str__(self): return self.username
+
+# ---- Orphan (foreign) incoming SMS without active session ----
+class OrphanSms(Base):
+    __tablename__ = 'orphan_sms'
+
+    id = Column(Integer, primary_key=True)
+    phone_number_str = Column(String, nullable=False, index=True)
+    source_addr = Column(String, nullable=False, index=True)
+    text = Column(Text, nullable=False)
+    received_at = Column(DateTime(timezone=True), server_default=func.now(), index=True)
+
+    provider_id = Column(Integer, ForeignKey('providers.id', ondelete="SET NULL"), nullable=True, index=True)
+    country_id = Column(Integer, ForeignKey('countries.id', ondelete="SET NULL"), nullable=True, index=True)
+    operator_id = Column(Integer, ForeignKey('operators.id', ondelete="SET NULL"), nullable=True, index=True)
+
+    def __str__(self):
+        preview = self.text[:50] + ('...' if len(self.text) > 50 else '')
+        return f"{self.source_addr} → {self.phone_number_str}: {preview}"

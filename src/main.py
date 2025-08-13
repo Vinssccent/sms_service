@@ -7,17 +7,18 @@ import threading
 import datetime
 import random
 import time
+import asyncio
 from contextlib import asynccontextmanager
 from typing import Optional, Any, List
 
 from fastapi import Depends, FastAPI, Request
-from sqlalchemy import func, cast, Date, or_, and_
+from sqlalchemy import func, cast, Date, or_, and_, text
 from sqlalchemy.orm import Session, selectinload
 from starlette.responses import JSONResponse, Response, RedirectResponse
 from starlette_admin.contrib.sqla import Admin, ModelView
 from starlette_admin.auth import AuthProvider
 from starlette_admin.views import Link
-from starlette_admin.fields import StringField
+from starlette_admin.fields import StringField, EnumField
 from starlette.middleware.sessions import SessionMiddleware
 from prometheus_fastapi_instrumentator import Instrumentator
 import redis
@@ -41,6 +42,58 @@ except redis.exceptions.ConnectionError as e:
 background_threads: dict[str, threading.Thread] = {}
 stop_events: dict[str, threading.Event] = {}
 
+def delete_numbers_in_background(provider_id_str: str, country_id_str: str, is_in_use_str: str):
+    """Эта функция будет выполняться в фоновом потоке."""
+    db = SessionLocal()
+    try:
+        base_delete_sql = "DELETE FROM phone_numbers WHERE ctid IN (SELECT ctid FROM phone_numbers {where_clause} LIMIT :batch_size)"
+        
+        where_conditions = []
+        params = {}
+
+        if provider_id_str:
+            where_conditions.append("provider_id = :provider_id")
+            params['provider_id'] = int(provider_id_str)
+        if country_id_str:
+            where_conditions.append("country_id = :country_id")
+            params['country_id'] = int(country_id_str)
+        if is_in_use_str:
+            where_conditions.append("is_in_use = :is_in_use")
+            params['is_in_use'] = (is_in_use_str == 'true')
+        
+        where_clause = ""
+        if where_conditions:
+            where_clause = "WHERE " + " AND ".join(where_conditions)
+            
+        final_sql = base_delete_sql.format(where_clause=where_clause)
+        delete_stmt = text(final_sql)
+        
+        total_deleted_count = 0
+        batch_size = 20000
+
+        log.info(f"[BG TASK] Начинаю массовое удаление номеров порциями по {batch_size}...")
+
+        while True:
+            params['batch_size'] = batch_size
+            result = db.execute(delete_stmt, params)
+            db.commit() 
+            
+            deleted_in_batch = result.rowcount
+            if deleted_in_batch == 0:
+                break
+                
+            total_deleted_count += deleted_in_batch
+            log.info(f"[BG TASK] Удалена порция из {deleted_in_batch} номеров. Всего удалено: {total_deleted_count}")
+            time.sleep(0.05)
+
+        log.info(f"[BG TASK] Массовое удаление завершено. Всего удалено: {total_deleted_count}")
+
+    except Exception as e:
+        log.error(f"[BG TASK] Ошибка при фоновом удалении: {e}", exc_info=True)
+        db.rollback()
+    finally:
+        db.close()
+
 def cleanup_expired_sessions(stop_event: threading.Event):
     log.info("▶︎ Запущен поток-уборщик старых сессий.")
     if not stop_event.wait(timeout=60):
@@ -58,8 +111,11 @@ def cleanup_expired_sessions(stop_event: threading.Event):
                     log.warning(f"🧹 Найдено {len(sessions_to_cancel)} сессий без SMS. Отменяю...")
                     for sess in sessions_to_cancel:
                         sess.status = 8
-                        if sess.phone_number:
-                            sess.phone_number.is_in_use = False
+                        try:
+                            if sess.phone_number:
+                                sess.phone_number.is_in_use = False
+                        except Exception as e:
+                            log.warning(f"Не удалось обновить номер для сессии {sess.id}, возможно, он был удален: {e}")
                     db.commit()
                 sessions_to_complete = (
                     db.query(models.Session)
@@ -70,8 +126,11 @@ def cleanup_expired_sessions(stop_event: threading.Event):
                     log.warning(f"🧹 Найдено {len(sessions_to_complete)} незакрытых сессий с SMS. Завершаю...")
                     for sess in sessions_to_complete:
                         sess.status = 6
-                        if sess.phone_number:
-                            sess.phone_number.is_in_use = False
+                        try:
+                            if sess.phone_number:
+                                sess.phone_number.is_in_use = False
+                        except Exception as e:
+                            log.warning(f"Не удалось обновить номер для сессии {sess.id}, возможно, он был удален: {e}")
                     db.commit()
                 if not sessions_to_cancel and not sessions_to_complete:
                     log.info("🧹 Не найдено просроченных сессий.")
@@ -87,9 +146,13 @@ async def lifespan(app: FastAPI):
     log.info("=== Lifespan startup: запускаю фоновые процессы ===")
     db = SessionLocal()
     try:
-        active_providers = db.query(models.Provider).filter(models.Provider.is_active.is_(True)).all()
-        for prov in active_providers:
-            log.info(" → worker для провайдера %s", prov.name)
+        outbound_providers = db.query(models.Provider).filter(
+            models.Provider.is_active.is_(True),
+            models.Provider.connection_type == 'outbound'
+        ).all()
+        
+        for prov in outbound_providers:
+            log.info(" → Запускаю outbound worker для провайдера: %s", prov.name)
             stop_event = threading.Event()
             thread = threading.Thread(target=smpp_worker.run_smpp_provider_loop, args=(prov, stop_event), daemon=True, name=f"SMPP-Worker-{prov.id}")
             thread.start()
@@ -139,7 +202,23 @@ Instrumentator().instrument(app).expose(app)
 app.add_middleware(SessionMiddleware, secret_key="change-this-to-a-long-random-string")
 
 class ProviderView(ModelView):
-    fields = ["id", "name", "smpp_host", "smpp_port", "system_id", "password", "is_active", "daily_limit"]
+    fields = [
+        "id", 
+        "name", 
+        EnumField(
+            "connection_type",
+            label="Connection Type",
+            choices=[("outbound", "Outbound (Мы к ним)"), ("inbound", "Inbound (Они к нам)")],
+            help_text="Определяет направление SMPP-подключения."
+        ),
+        "smpp_host", 
+        "smpp_port", 
+        "system_id", 
+        "password", 
+        "system_type", 
+        "is_active", 
+        "daily_limit"
+    ]
     searchable_fields = ["name", "smpp_host"]
     sortable_fields = ["id", "name"]
 
@@ -226,7 +305,7 @@ def get_db():
     finally: db.close()
 
 @app.get("/stubs/handler_api.php")
-def handle_api(action: str, api_key: str, service: Optional[str] = None, country: Optional[int] = None, operator: Optional[str] = None, id: Optional[int] = None, status: Optional[int] = None, number: Optional[str] = None, db: Session = Depends(get_db)):
+async def handle_api(action: str, api_key: str, service: Optional[str] = None, country: Optional[int] = None, operator: Optional[str] = None, id: Optional[int] = None, status: Optional[int] = None, number: Optional[str] = None, db: Session = Depends(get_db)):
     db_key = db.query(models.ApiKey).filter(models.ApiKey.key == api_key, models.ApiKey.is_active.is_(True)).first()
     if not db_key: return Response("BAD_KEY", media_type="text/plain")
     if action == "getBalance": return Response("ACCESS_BALANCE:9999", media_type="text/plain")
@@ -360,15 +439,11 @@ def handle_api(action: str, api_key: str, service: Optional[str] = None, country
         num_obj.is_in_use = True
         norm = normalize_phone_number(num_obj.number_str)
 
-        # --- НАЧАЛО ИЗМЕНЕНИЙ: Усиленная защита от гонки состояний ---
         if redis_client:
-            # Устанавливаем "сигнальный" ключ в Redis на 10 секунд (увеличено)
             redis_client.set(f"pending_session:{norm}", 1, ex=10)
             log.info(f"Установлен сигнальный ключ в Redis для {norm}")
-            # Добавляем крошечную задержку для гарантии записи перед commit'ом в БД
-            time.sleep(0.1) 
-        # --- КОНЕЦ ИЗМЕНЕНИЙ ---
-
+            await asyncio.sleep(0.2)
+        
         sess = models.Session(phone_number_str=norm, service_id=db_service.id, phone_number_id=num_obj.id, api_key_id=db_key.id, status=1)
         db.add(sess); db.commit(); db.refresh(sess)
         return Response(f"ACCESS_NUMBER:{sess.id}:{norm.replace('+', '')}", media_type="text/plain")
@@ -404,12 +479,10 @@ def handle_api(action: str, api_key: str, service: Optional[str] = None, country
 
         num_obj.is_in_use = True
         
-        # --- НАЧАЛО ИЗМЕНЕНИЙ: Усиленная защита от гонки состояний для getRepeatNumber ---
         if redis_client:
             redis_client.set(f"pending_session:{norm}", 1, ex=10)
             log.info(f"Установлен сигнальный ключ в Redis для {norm} (getRepeatNumber)")
-            time.sleep(0.05)
-        # --- КОНЕЦ ИЗМЕНЕНИЙ ---
+            await asyncio.sleep(0.2)
 
         sess = models.Session(phone_number_str=norm, service_id=target_service.id, phone_number_id=num_obj.id, api_key_id=db_key.id, status=1)
         db.add(sess); db.commit(); db.refresh(sess)

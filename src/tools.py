@@ -7,9 +7,10 @@ import io
 import csv
 import math
 import logging
+import time
 from datetime import timedelta
 from typing import Optional, List
-from fastapi import Request, UploadFile, Depends, Form, APIRouter
+from fastapi import Request, UploadFile, Depends, Form, APIRouter, BackgroundTasks
 from starlette.responses import RedirectResponse, StreamingResponse
 from sqlalchemy import func, cast, Date, text, distinct
 from sqlalchemy.orm import Session, selectinload
@@ -18,6 +19,7 @@ from starlette.templating import Jinja2Templates
 from .database import SessionLocal, engine
 from . import models
 from .utils import normalize_phone_number
+from . import main as main_app # Импортируем main, чтобы получить доступ к фоновой функции
 
 # Добавляем логгер для отладки
 log = logging.getLogger(__name__)
@@ -282,20 +284,15 @@ def handle_range_generation(
             num_x = mask.lower().count('x')
             
             generated_for_this_mask = 0
-            # Увеличиваем количество попыток, чтобы компенсировать дубликаты
             max_attempts = int(quantity_per_mask * 1.5) + 1000 
             
-            # --- Оптимизация ---
-            # Генерируем сразу большую пачку уникальных кандидатов
             candidates_to_generate = set()
             while len(candidates_to_generate) < quantity_per_mask and len(candidates_to_generate) < max_attempts:
                 candidates_to_generate.add(f"{prefix}{''.join(random.choices(string.digits, k=num_x))}")
             
-            # Проверяем всех кандидатов в базе за один запрос
             candidate_list = list(candidates_to_generate)
             existing_numbers = {n[0] for n in db.query(models.PhoneNumber.number_str).filter(models.PhoneNumber.number_str.in_(candidate_list))}
             
-            # Готовим к добавлению только те, которых нет в базе
             new_numbers_to_add = [
                 {
                     "number_str": num, 
@@ -321,20 +318,27 @@ def handle_range_generation(
         db.rollback()
         return RedirectResponse(url=f"/tools?error=Ошибка БД: {str(e)[:100]}&tab=generator-pane", status_code=303)
 
-
 @router.post("/manager/delete", tags=["Tools"])
-async def handle_mass_delete(provider_id: str = Form(""), country_id: str = Form(""), is_in_use: str = Form(""), db: Session = Depends(get_db)):
+async def handle_mass_delete(
+    background_tasks: BackgroundTasks,
+    provider_id: str = Form(""), 
+    country_id: str = Form(""), 
+    is_in_use: str = Form("")
+):
     try:
-        query = db.query(models.PhoneNumber)
-        if provider_id: query = query.filter(models.PhoneNumber.provider_id == int(provider_id))
-        if country_id: query = query.filter(models.PhoneNumber.country_id == int(country_id))
-        if is_in_use: query = query.filter(models.PhoneNumber.is_in_use == (is_in_use == 'true'))
-        deleted_count = query.delete(synchronize_session=False)
-        db.commit()
-        return RedirectResponse(url=f"/tools?success=Удалено {deleted_count} номеров.&tab=manager-pane", status_code=303)
+        background_tasks.add_task(
+            main_app.delete_numbers_in_background, 
+            provider_id, 
+            country_id, 
+            is_in_use
+        )
+        return RedirectResponse(
+            url="/tools?success=Процесс массового удаления запущен в фоновом режиме. Следите за логами.&tab=manager-pane", 
+            status_code=303
+        )
     except Exception as e:
-        db.rollback()
-        return RedirectResponse(url=f"/tools?error=Ошибка: {str(e)[:100]}&tab=manager-pane", status_code=303)
+        log.error(f"Ошибка при запуске фоновой задачи удаления: {e}", exc_info=True)
+        return RedirectResponse(url=f"/tools?error=Не удалось запустить задачу: {str(e)[:100]}&tab=manager-pane", status_code=303)
 
 @router.post("/manager/shuffle", tags=["Tools"])
 async def handle_shuffle(db: Session = Depends(get_db)):

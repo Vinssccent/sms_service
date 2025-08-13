@@ -137,8 +137,8 @@ def _handle_deliver_sm(pdu, db: Session) -> int:
         # нормализуем номер в +E.164
         dst = normalize_phone_number(dst_raw)
 
-        # --- НАЧАЛО ИЗМЕНЕНИЙ: Усиленная защита от гонки состояний ---
-        retries = 5 # Увеличиваем количество попыток
+        # --- НАЧАЛО ИЗМЕНЕНИЙ: Усиленная и исправленная защита от гонки состояний ---
+        retries = 5 
         active_sessions = []
         for i in range(retries):
             # Пытаемся найти активные сессии
@@ -156,29 +156,24 @@ def _handle_deliver_sm(pdu, db: Session) -> int:
             if active_sessions:
                 if i > 0:
                     log.info(f"✓ Сессия для '{dst}' найдена с попытки №{i+1}")
-                break  # Сессия найдена, выходим из цикла
+                break
             
-            # Если сессия не найдена, проверяем Redis, но только если это не последняя попытка
             if i < retries - 1 and redis_client and redis_client.exists(f"pending_session:{dst}"):
                 log.warning(f"Сессия для '{dst}' не найдена (попытка {i+1}/{retries}), но есть сигнал в Redis. Жду 200ms...")
                 time.sleep(0.2)
-                db.expire_all() # Сбрасываем кэш сессии SQLAlchemy
+                db.expire_all()
             else:
-                # Если нет ни сессии, ни сигнала в Redis (или это последняя попытка), больше ждать нет смысла
                 break
         # --- КОНЕЦ ИЗМЕНЕНИЙ ---
 
-
-        # Нет ни одной сессии → сиротка: пишем в orphan_sms и шлём 69
         if not active_sessions:
             log.warning(
                 f"REJECT: Не найдена ни одна активная сессия для номера '{dst}' после всех попыток. "
                 f"Сохраняю как orphan и возвращаю 69."
             )
             save_orphan_sms(db, dst, src_raw, text)
-            return ESME_RINVSENDERID  # 69
+            return ESME_RINVSENDERID
 
-        # Если сессии есть — пытаемся сматчить по имени сервиса в тексте/сендере
         matched_session = None
         text_lower, src_lower = text.lower(), src_raw.lower()
 
@@ -187,16 +182,13 @@ def _handle_deliver_sm(pdu, db: Session) -> int:
             if not service_obj:
                 continue
 
-            # Проверяем, не является ли сервис специальным "всеядным" сервисом 'nitro'
             if service_obj.code == 'nitro':
                 log.info(f"Обнаружена сессия для спец. сервиса '{service_obj.name}'. Принимаю любое SMS.")
                 matched_session = sess
-                break  # Сразу выходим из цикла, найдя "жадный" сервис.
+                break
 
-            # Стандартная логика для всех остальных обычных сервисов
             all_keywords = set()
             if service_obj.name:
-                # Используем re.findall для универсального извлечения слов из имени сервиса
                 parts = re.findall(r'\w+', service_obj.name.lower())
                 all_keywords.update(p for p in parts if p)
 
@@ -215,16 +207,14 @@ def _handle_deliver_sm(pdu, db: Session) -> int:
                 matched_session = sess
                 break
 
-        # Сессии были, но ни одна не сматчилась → тоже сиротка
         if not matched_session:
             log.warning(
                 f"REJECT: SMS от '{src_raw}' не соответствует ни одной из активных сессий для номера '{dst}'. "
                 f"Сохраняю как orphan и возвращаю 69."
             )
             save_orphan_sms(db, dst, src_raw, text)
-            return ESME_RINVSENDERID  # 69
+            return ESME_RINVSENDERID
 
-        # Привязываем SMS к сессии
         code = _parse_code(text)
         db.add(
             models.SmsMessage(
@@ -234,7 +224,7 @@ def _handle_deliver_sm(pdu, db: Session) -> int:
                 code=code,
             )
         )
-        matched_session.status = 2  # получили код
+        matched_session.status = 2
         db.commit()
         log.info(
             f"SUCCESS: SMS от '{src_raw}' привязана к сессии {matched_session.id} "
@@ -269,7 +259,6 @@ def run_smpp_provider_loop(provider: models.Provider, stop_evt: threading.Event)
                     status = _handle_deliver_sm(pdu, db)
                 finally:
                     db.close()
-                # отвечаем провайдеру тем статусом, который вернул обработчик
                 try:
                     if client and client.state == 'BOUND_TRX':
                         client.send_pdu(pdu.make_response(command_status=status))
@@ -280,7 +269,7 @@ def run_smpp_provider_loop(provider: models.Provider, stop_evt: threading.Event)
 
             log.info(f"[{provider.name}] Подключение к {provider.smpp_host}:{provider.smpp_port}…")
             client.connect()
-            client.bind_transceiver(system_id=provider.system_id, password=provider.password)
+            client.bind_transceiver(system_id=provider.system_id, password=provider.password, system_type=provider.system_type)
             log.info(f"[{provider.name}] BOUND_TRX OK, слушаю…")
 
             client.listen(auto_send_enquire_link=True)
@@ -289,7 +278,7 @@ def run_smpp_provider_loop(provider: models.Provider, stop_evt: threading.Event)
 
         except smpplib.exceptions.PDUError as pdu_exc:
             error_code = pdu_exc.args[1] if len(pdu_exc.args) > 1 else 0
-            if error_code == 14:  # ESME_RBINDFAIL
+            if error_code == 14:
                 log.error(f"[{provider.name}] Ошибка аутентификации: {pdu_exc}. Повтор через 30 сек.")
                 if not stop_evt.wait(30):
                     continue

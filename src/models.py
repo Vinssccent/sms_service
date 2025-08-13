@@ -74,10 +74,12 @@ class Provider(Base):
     __tablename__ = 'providers'
     id = Column(Integer, primary_key=True)
     name = Column(String, unique=True, nullable=False, index=True)
+    connection_type = Column(String(10), default='outbound', nullable=False, server_default='outbound', index=True)
     smpp_host = Column(String, nullable=False)
     smpp_port = Column(Integer, nullable=False)
     system_id = Column(String, nullable=False)
     password = Column(String, nullable=False)
+    system_type = Column(String(50), nullable=True)
     is_active = Column(Boolean, default=True, nullable=False)
     daily_limit = Column(Integer, nullable=True, comment="Total daily limit for provider across all services/countries")
     phone_numbers = relationship("PhoneNumber", back_populates="provider", cascade="all, delete-orphan")
@@ -91,11 +93,11 @@ class PhoneNumber(Base):
     __tablename__ = 'phone_numbers'
     id = Column(Integer, primary_key=True)
     number_str = Column(String, unique=True, nullable=False, index=True)
-    provider_id = Column(Integer, ForeignKey('providers.id', ondelete="CASCADE"), nullable=False)
+    provider_id = Column(Integer, ForeignKey('providers.id', ondelete="CASCADE"), nullable=False, index=True)
     is_active = Column(Boolean, default=True, nullable=False)
     is_in_use = Column(Boolean, default=False, nullable=False, index=True)
-    country_id = Column(Integer, ForeignKey('countries.id', ondelete="CASCADE"), nullable=False)
-    operator_id = Column(Integer, ForeignKey('operators.id', ondelete="SET NULL"), nullable=True)
+    country_id = Column(Integer, ForeignKey('countries.id', ondelete="CASCADE"), nullable=False, index=True)
+    operator_id = Column(Integer, ForeignKey('operators.id', ondelete="SET NULL"), nullable=True, index=True)
     sort_order = Column(Integer, default=0, nullable=False, index=True)
     provider = relationship("Provider", back_populates="phone_numbers")
     country = relationship("Country")
@@ -118,22 +120,23 @@ class Session(Base):
     phone_number_str = Column(String, nullable=False, index=True)
     status = Column(Integer, nullable=False, default=1, index=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
-    service_id = Column(Integer, ForeignKey('services.id', ondelete="CASCADE"), nullable=False)
-    phone_number_id = Column(Integer, ForeignKey('phone_numbers.id', ondelete="CASCADE"), nullable=False)
-    api_key_id = Column(Integer, ForeignKey('api_keys.id', ondelete="CASCADE"), nullable=False)
+    service_id = Column(Integer, ForeignKey('services.id', ondelete="CASCADE"), nullable=False, index=True)
+    phone_number_id = Column(Integer, ForeignKey('phone_numbers.id', ondelete="CASCADE"), nullable=False, index=True)
+    api_key_id = Column(Integer, ForeignKey('api_keys.id', ondelete="CASCADE"), nullable=False, index=True)
     service = relationship("Service", back_populates="sessions")
     phone_number = relationship("PhoneNumber", back_populates="sessions")
     api_key = relationship("ApiKey", back_populates="sessions")
     sms_messages = relationship("SmsMessage", back_populates="session", cascade="all, delete-orphan")
+    __table_args__ = (Index('ix_session_cleanup', 'status', 'created_at'),)
 
 class SmsMessage(Base):
     __tablename__ = 'sms_messages'
     id = Column(Integer, primary_key=True)
-    session_id = Column(Integer, ForeignKey('sessions.id', ondelete="CASCADE"), nullable=False)
+    session_id = Column(Integer, ForeignKey('sessions.id', ondelete="CASCADE"), nullable=False, index=True)
     source_addr = Column(String, nullable=False, index=True)
     text = Column(Text, nullable=False)
-    code = Column(String(20), nullable=True)
-    received_at = Column(DateTime(timezone=True), server_default=func.now())
+    code = Column(String(20), nullable=True, index=True)
+    received_at = Column(DateTime(timezone=True), server_default=func.now(), index=True)
     session = relationship("Session", back_populates="sms_messages")
     __table_args__ = (Index('ix_sms_code', 'code'),)
 
@@ -171,20 +174,16 @@ class Admin(Base):
     avatar = Column(String(255))
     def __str__(self): return self.username
 
-# ---- Orphan (foreign) incoming SMS without active session ----
 class OrphanSms(Base):
     __tablename__ = 'orphan_sms'
-
     id = Column(Integer, primary_key=True)
     phone_number_str = Column(String, nullable=False, index=True)
     source_addr = Column(String, nullable=False, index=True)
     text = Column(Text, nullable=False)
     received_at = Column(DateTime(timezone=True), server_default=func.now(), index=True)
-
     provider_id = Column(Integer, ForeignKey('providers.id', ondelete="SET NULL"), nullable=True, index=True)
     country_id = Column(Integer, ForeignKey('countries.id', ondelete="SET NULL"), nullable=True, index=True)
     operator_id = Column(Integer, ForeignKey('operators.id', ondelete="SET NULL"), nullable=True, index=True)
-
     def __str__(self):
         preview = self.text[:50] + ('...' if len(self.text) > 50 else '')
         return f"{self.source_addr} → {self.phone_number_str}: {preview}"

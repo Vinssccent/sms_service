@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Детализация номеров</title>
+    <title>Список номеров | Панель управления</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     <style>
@@ -13,51 +13,44 @@
 </head>
 <body class="bg-gray-50">
 <div class="container mx-auto px-4 py-8">
-    <div class="flex justify-between items-center mb-8">
-        <div>
-            <h1 class="text-3xl font-bold text-gray-800">Список номеров</h1>
-            <div class="text-gray-500 mt-2 text-sm">
-                <strong>Поставщик:</strong> {{ provider_name or 'N/A' }} /
-                <strong>Сендер:</strong> {{ source_addr or 'N/A' }} /
-                <strong>Страна:</strong> {{ country_name or 'N/A' }} /
-                <strong>Оператор:</strong> {{ operator_name or 'N/A' }}
+    <div class="bg-white p-8 rounded-lg shadow-md">
+        <div class="flex justify-between items-center mb-6 border-b pb-4">
+            <div>
+                <h1 class="text-2xl font-bold text-gray-800">Список номеров</h1>
+                <p class="text-gray-500 mt-1">Поставщик: <span class="font-semibold text-gray-700">{{ provider_name }}</span> / Сендер: <span class="font-semibold text-gray-700">{{ source_addr }}</span> / Страна: <span class="font-semibold text-gray-700">{{ country_name }}</span> / Оператор: <span class="font-semibold text-gray-700">{{ operator_name }}</span></p>
             </div>
-        </div>
-        <a href="/tools?tab=orphan-traffic-pane" class="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition inline-flex items-center">
-            <i class="fas fa-arrow-left mr-2"></i> Назад к анализу
-        </a>
-    </div>
-
-    <div class="bg-white p-6 rounded-lg shadow-sm">
-        <div class="mb-4 space-x-2">
-            <button id="copyBtn" class="px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition">
-                <i class="fas fa-copy mr-2"></i>Копировать номера
-            </button>
-            <a href="{{ request.url }}&format=csv" class="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition inline-flex items-center">
-                <i class="fas fa-file-csv mr-2"></i>Скачать CSV
+            <a href="{{ request.url_for('get_tools_page') }}?tab=orphan-traffic-pane" class="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition inline-flex items-center">
+                <i class="fas fa-arrow-left mr-2"></i> Назад к анализу
             </a>
         </div>
-        
-        <textarea id="numbersArea" class="w-full h-96 p-4 font-mono text-sm bg-gray-100 border border-gray-300 rounded-lg" readonly>
-{%- for number in numbers -%}
-{{ number }}
-{%- endfor -%}
-</textarea>
+
+        <div class="mb-6 flex space-x-2">
+            <button id="copy-btn" class="px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition inline-flex items-center">
+                <i class="fas fa-copy mr-2"></i> Копировать номера
+            </button>
+            <a href="{{ request.url.replace_query_params(format='csv') }}" class="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition inline-flex items-center">
+                <i class="fas fa-file-csv mr-2"></i> Скачать CSV
+            </a>
+        </div>
+
+        <div class="w-full">
+            <textarea id="numbers-textarea" class="w-full h-96 p-4 border border-gray-300 rounded-lg font-mono text-sm bg-gray-50" readonly>{{ numbers | join('\n') }}</textarea>
+        </div>
+        <p class="text-sm text-gray-500 mt-2">Всего найдено уникальных номеров: {{ numbers | length }}</p>
     </div>
 </div>
 
 <script>
-document.getElementById('copyBtn').addEventListener('click', function() {
-    const numbersArea = document.getElementById('numbersArea');
-    numbersArea.select();
-    try {
-        document.execCommand('copy');
-        this.innerHTML = '<i class="fas fa-check mr-2"></i>Скопировано!';
-    } catch (err) {
-        this.innerHTML = '<i class="fas fa-times mr-2"></i>Ошибка!';
-    }
-    setTimeout(() => { this.innerHTML = '<i class="fas fa-copy mr-2"></i>Копировать номера'; }, 2000);
+document.getElementById('copy-btn').addEventListener('click', function() {
+    const textarea = document.getElementById('numbers-textarea');
+    textarea.select();
+    document.execCommand('copy');
+    this.innerHTML = '<i class="fas fa-check mr-2"></i> Скопировано!';
+    setTimeout(() => {
+        this.innerHTML = '<i class="fas fa-copy mr-2"></i> Копировать номера';
+    }, 2000);
 });
 </script>
+
 </body>
 </html>

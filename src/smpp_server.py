@@ -1,194 +1,316 @@
 # src/smpp_server.py
 # -*- coding: utf-8 -*-
-# Финальная версия SMPP-сервера с исправленной ошибкой подключения и надежной сборкой длинных SMS.
-import sys, os, logging, time
-from typing import List, Union, Dict, Any
+"""
+SMPP-сервер c цветным логом (Rich):
+- Слушает 40000 (или список из SMPP_BIND_PORTS).
+- Белый список IP: ENV (ALLOWED_SMPP_IPS_RAW/ALLOWED_SMPP_IPS) + БД (provider_ips, providers.smpp_host).
+- На каждую SMS — одна строка лога: OUR(0) / ORPHAN(69) / SYSERR(8).
+- Бизнес-ошибки не рвут сессию: отвечаем 8 и продолжаем.
+"""
 
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import os
+import asyncio
+import struct
+import random
+import ipaddress
+import logging
+from typing import Iterable, List, Optional, Set
 
-from smppy import Application, SmppClient
+from sqlalchemy import text
+from smpplib import smpp, pdu
+
 from src.database import SessionLocal
-from src.smpp_worker import handle_incoming_sms, ESME_ROK
+from src.smpp_worker import (
+    _handle_deliver_sm,
+    get_decoded_text,
+    start_concatenation_worker,
+    stop_concatenation_worker,
+    ESME_ROK,          # 0
+    ESME_RSUBMITFAIL,  # 69
+    ESME_RSYSERR,      # 8
+)
+from src.logging_setup import setup_logging, ConnAdapter
 
-logging.basicConfig(level=logging.INFO)
-log = logging.getLogger("smpp-server")
+# Цветной лог (Rich)
+setup_logging()
+log = logging.getLogger("smpp.server")
+# Убрать дубли: глушим инфо-логи воркера внутри этого процесса
+logging.getLogger("src.smpp_worker").setLevel(logging.WARNING)
 
-MESSAGE_PARTS: Dict[str, Dict[str, Any]] = {}
-LAST_CLEANUP_TIME = time.time()
-INCOMPLETE_MESSAGE_TIMEOUT = 300  # 5 минут
 
-def _parse_udh(udh_prefixed: bytes) -> Union[tuple, None]:
-    if not udh_prefixed: return None
-    try:
-        udhl = udh_prefixed[0]
-        header_len = udhl + 1
-        if len(udh_prefixed) < header_len:
-            log.warning("UDH parsing failed: header is truncated.")
-            return None
-        pos, end = 1, header_len
-        msg_ref = total_segments = seqnum = None
-        while pos + 1 < end:
-            iei = udh_prefixed[pos]
-            iedl = udh_prefixed[pos + 1]
-            if pos + 2 + iedl > end:
-                log.warning("UDH parsing failed: IE data overflows header length.")
-                break
-            ie_data = udh_prefixed[pos + 2 : pos + 2 + iedl]
-            if iei == 0x00 and iedl == 3:
-                msg_ref, total_segments, seqnum = str(ie_data[0]), ie_data[1], ie_data[2]
-                break
-            elif iei == 0x08 and iedl == 4:
-                msg_ref = str((ie_data[0] << 8) | ie_data[1])
-                total_segments, seqnum = ie_data[2], ie_data[3]
-                break
-            pos += 2 + iedl
-        if msg_ref is not None and total_segments is not None and seqnum is not None:
-            return (msg_ref, total_segments, seqnum, header_len)
-        log.debug("UDH found, but not for a concatenated message.")
-        return None
-    except IndexError:
-        log.error("UDH parsing failed due to IndexError.", exc_info=True)
-        return None
+# -------------------------
+# SMPP helpers
+# -------------------------
+class SequenceGenerator:
+    def __init__(self) -> None:
+        self.sequence = 1
+    def next_sequence(self) -> int:
+        cur = self.sequence
+        self.sequence = (self.sequence + 1) & 0x7FFFFFFF
+        return cur
 
-def _cleanup_incomplete_messages():
-    global LAST_CLEANUP_TIME
-    now = time.time()
-    if now - LAST_CLEANUP_TIME > 60:
-        keys_to_delete = [ref for ref, data in MESSAGE_PARTS.items() if now - data['timestamp'] > INCOMPLETE_MESSAGE_TIMEOUT]
-        if keys_to_delete:
-            log.info(f"Running cleanup task, found {len(keys_to_delete)} timed out message parts.")
-            for key in keys_to_delete:
-                log.warning(f"Incomplete SMS with ref {key} timed out. Discarding parts.")
-                del MESSAGE_PARTS[key]
-        LAST_CLEANUP_TIME = now
 
-class PduAdapter:
-    def __init__(self, src: str, dst: str, txt: str):
-        self._source_addr = src.encode("utf-8", errors="replace")
-        self._dest_addr = dst.encode("utf-8", errors="replace")
-        self._short_message = txt.encode("utf-8", errors="replace")
-    @property
-    def destination_addr(self): return self._dest_addr
-    @property
-    def source_addr(self): return self._source_addr
-    @property
-    def short_message(self): return self._short_message
+async def read_pdu_from_stream(reader: asyncio.StreamReader, seq_gen: SequenceGenerator) -> pdu.PDU:
+    len_bytes = await reader.readexactly(4)
+    length = struct.unpack(">L", len_bytes)[0]
+    if not (16 <= length <= 65536):
+        raise ValueError(f"Некорректная длина PDU: {length}")
+    body = await reader.readexactly(length - 4)
+    return smpp.parse_pdu(len_bytes + body, client=seq_gen)
 
-class MySmppServer(Application):
-    def __init__(self, name: str):
-        super().__init__(name=name, logger=log)
-        self.clients: List[SmppClient] = []
 
-    async def handle_bound_client(self, *args, **kwargs) -> Union[SmppClient, None]:
-        client = kwargs.get("client") or (args[0] if args else None)
-        if client is None:
-            log.warning("[BIND] client is None")
-            return None
-        log.info(f"[BIND] {getattr(client, 'system_id', '?')}")
-        if client not in self.clients:
-            self.clients.append(client)
-        return client
+def make_resp(req: pdu.PDU, status: int, seq_gen: SequenceGenerator) -> pdu.PDU:
+    resp_cmd = req.command + "_resp"
+    params = {"sequence": req.sequence, "status": status, "client": seq_gen}
+    if resp_cmd == "submit_sm_resp":
+        params["message_id"] = str(random.randint(10000, 99999)).encode()
+    resp = smpp.make_pdu(resp_cmd, **params)
+    if resp_cmd == "bind_transceiver_resp":
+        resp.system_id = b"SMSService"
+    return resp
 
-    async def handle_bound_receiver_client(self, *args, **kwargs): return await self.handle_bound_client(*args, **kwargs)
-    async def handle_bound_transmitter_client(self, *args, **kwargs): return await self.handle_bound_client(*args, **kwargs)
 
-    async def handle_unbound_client(self, *args, **kwargs):
-        client = kwargs.get("client") or (args[0] if args else None)
-        if client:
-            log.info(f"[UNBIND] {getattr(client, 'system_id', '?')}")
-            if client in self.clients: self.clients.remove(client)
-
-    async def handle_enquire_link(self, *args, **kwargs):
-        client = kwargs.get("client") or (args[0] if args else None)
-        pdu    = kwargs.get("pdu")    or (args[1] if len(args) > 1 else None)
-        if client and pdu: await client.send_pdu(pdu.make_response())
-
-    async def handle_generic_nack(self, *args, **kwargs):
-        client = kwargs.get("client") or (args[0] if args else None)
-        pdu    = kwargs.get("pdu")    or (args[1] if len(args) > 1 else None)
-        if client and pdu: await client.send_pdu(pdu.make_response(command_status=0x00000003))
-
-    async def handle_sms_received(self, *args, **kwargs):
-        _cleanup_incomplete_messages()
-        client = kwargs.get("client") or (args[0] if args else None)
-        pdu    = kwargs.get("pdu")    or (args[1] if len(args) > 1 else None)
+# -------------------------
+# Whitelist helpers
+# -------------------------
+def _parse_cidrs(raw: str) -> List[ipaddress._BaseNetwork]:
+    nets: List[ipaddress._BaseNetwork] = []
+    for token in (raw or "").replace(";", ",").split(","):
+        token = token.strip()
+        if not token:
+            continue
         try:
-            full_text = None
-            src = ""
-            dst = ""
-            if pdu is not None and hasattr(pdu, 'params'):
-                params = pdu.params
-                src = params.get(b"source_addr", b"").decode("ascii", "replace").strip("\x00")
-                dst = params.get(b"destination_addr", b"").decode("ascii", "replace").strip("\x00")
-                short_message_bytes = params.get(b'short_message', b'')
-                data_coding = params.get(b'data_coding', b'\x00')[0]
-                esm_class = params.get(b'esm_class', b'\x00')[0]
-                if (esm_class & 0x40):
-                    udh_info = _parse_udh(short_message_bytes)
-                    if udh_info:
-                        msg_ref, total_segments, segment_seqnum, udh_total_len = udh_info
-                        storage_key = f"{src}-{msg_ref}"
-                        log.info(f"Received part {segment_seqnum}/{total_segments} for message ref {storage_key}.")
-                        part_bytes = short_message_bytes[udh_total_len:]
-                        if storage_key not in MESSAGE_PARTS:
-                            MESSAGE_PARTS[storage_key] = {'parts': {}, 'total': total_segments, 'timestamp': time.time(), 'dc': data_coding}
-                        MESSAGE_PARTS[storage_key]['parts'][segment_seqnum] = part_bytes
-                        bucket = MESSAGE_PARTS[storage_key]
-                        if len(bucket['parts']) == bucket['total']:
-                            log.info(f"All parts for message ref {storage_key} received. Reassembling...")
-                            ordered_parts = [bucket['parts'].get(i) for i in range(1, bucket['total'] + 1)]
-                            if all(part is not None for part in ordered_parts):
-                                full_message_bytes = b"".join(ordered_parts)
-                                final_dc = bucket['dc']
-                                if final_dc == 8:
-                                    if len(full_message_bytes) % 2 == 1: full_message_bytes += b'\x00'
-                                    full_text = full_message_bytes.decode('utf-16-be', errors='replace')
-                                else:
-                                    full_text = full_message_bytes.decode('latin-1', errors='replace')
-                            else:
-                                log.error(f"Failed to assemble message {storage_key}: missing parts. Discarding.")
-                            del MESSAGE_PARTS[storage_key]
-                    else:
-                        udhl = short_message_bytes[0] + 1
-                        payload = short_message_bytes[udhl:]
-                        full_text = payload.decode('latin-1', errors='replace')
-                else:
-                    if data_coding == 8:
-                        full_text = short_message_bytes.decode('utf-16-be', errors='replace')
-                    else:
-                        full_text = short_message_bytes.decode('latin-1', errors='replace')
-            else:
-                src = str(kwargs.get("source_number") or "")
-                dst = str(kwargs.get("dest_number") or "")
-                full_text = str(kwargs.get("text") or "")
-            if full_text is not None:
-                full_text = full_text.replace('\x00', '').strip()
-                if not src or not dst:
-                    log.warning("SMS ignored: missing source or destination")
-                    if client and pdu: await client.send_pdu(pdu.make_response(command_status=ESME_ROK))
-                    return
-                clean_text = full_text.replace('\n', ' ').replace('\r', '')
-                log.info(f"SMPP GATEWAY: FULL SMS '{clean_text}' from '{src}' to '{dst}'")
-                db = SessionLocal()
+            if "/" not in token:
+                ip = ipaddress.ip_address(token)
+                token = f"{token}/32" if isinstance(ip, ipaddress.IPv4Address) else f"{token}/128"
+            nets.append(ipaddress.ip_network(token, strict=False))
+        except ValueError:
+            log.debug(f"[yellow]WHITELIST ENV[/]: игнор '{token}'")
+    return nets
+
+
+def _extract_ipv4_from_host(host: str) -> Optional[str]:
+    host = (host or "").strip()
+    if not host:
+        return None
+    if ":" in host:
+        host = host.split(":", 1)[0]
+    parts = host.split(".")
+    if len(parts) == 4 and all(p.isdigit() and 0 <= int(p) <= 255 for p in parts):
+        return host
+    return None
+
+
+def _load_whitelist_from_env() -> List[ipaddress._BaseNetwork]:
+    raw = os.getenv("ALLOWED_SMPP_IPS_RAW")
+    if raw is None:
+        raw = os.getenv("ALLOWED_SMPP_IPS", "")
+    nets = _parse_cidrs(raw)
+    if os.getenv("SMPP_WHITELIST_ALLOW_LOCALHOST", "true").lower() in ("1", "true", "yes"):
+        nets.append(ipaddress.ip_network("127.0.0.1/32"))
+    return nets
+
+
+def _load_whitelist_from_db() -> List[ipaddress._BaseNetwork]:
+    nets: List[ipaddress._BaseNetwork] = []
+    db = SessionLocal()
+    try:
+        try:
+            rows = db.execute(text("SELECT ip_cidr FROM provider_ips WHERE is_active = TRUE")).fetchall()
+            for (cidr,) in rows:
                 try:
-                    status = handle_incoming_sms(PduAdapter(src, dst, full_text), db)
-                    if client and pdu:
-                        await client.send_pdu(pdu.make_response(command_status=status))
-                finally:
-                    db.close()
-            else:
-                log.info("Stored SMS part. Waiting for the rest.")
-                if client and pdu:
-                    await client.send_pdu(pdu.make_response(command_status=ESME_ROK))
+                    nets.append(ipaddress.ip_network(cidr, strict=False))
+                except ValueError:
+                    log.debug(f"[yellow]WHITELIST DB[/]: игнор '{cidr}'")
         except Exception as e:
-            log.error(f"Critical error processing SMS: {e}", exc_info=True)
-            if client and pdu:
+            log.warning(f"[yellow]WHITELIST DB[/]: не прочитал provider_ips: {e}")
+        try:
+            rows2 = db.execute(
+                text("SELECT smpp_host FROM providers WHERE smpp_host IS NOT NULL AND smpp_host <> ''")
+            ).fetchall()
+            for (host,) in rows2:
+                ip = _extract_ipv4_from_host(host)
+                if ip:
+                    nets.append(ipaddress.ip_network(f"{ip}/32"))
+        except Exception as e:
+            log.warning(f"[yellow]WHITELIST DB[/]: не прочитал providers: {e}")
+    finally:
+        db.close()
+    return nets
+
+
+def build_effective_whitelist() -> List[ipaddress._BaseNetwork]:
+    env_nets = _load_whitelist_from_env()
+    db_nets = _load_whitelist_from_db()
+    seen: Set[str] = set()
+    result: List[ipaddress._BaseNetwork] = []
+    for n in env_nets + db_nets:
+        s = str(n)
+        if s not in seen:
+            result.append(n)
+            seen.add(s)
+    short = ", ".join(str(n) for n in result[:5]) + ("..." if len(result) > 5 else "")
+    log.info(f"[cyan]WHITELIST[/]: loaded {len(result)} rule(s): {short}")
+    return result
+
+
+def is_ip_allowed(ip: str, whitelist: Iterable[ipaddress._BaseNetwork]) -> bool:
+    try:
+        ip_obj = ipaddress.ip_address(ip)
+    except ValueError:
+        return False
+    return any(ip_obj in net for net in whitelist)
+
+
+# -------------------------
+# SMPP session
+# -------------------------
+async def smpp_session(reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
+    peer = writer.get_extra_info("peername")
+    client_ip = (peer[0] if isinstance(peer, tuple) else str(peer)).split(":")[0]
+    conn_id = f"{client_ip}:{peer[1] if isinstance(peer, tuple) else '-'}"
+    L = ConnAdapter(log, {"conn": conn_id})
+
+    L.info(f"[bold]Новое подключение[/]: {peer}")
+
+    whitelist = build_effective_whitelist()
+    if whitelist and not is_ip_allowed(client_ip, whitelist):
+        L.warning("[red]WHITELIST[/]: отклонено подключение")
+        writer.close()
+        try:
+            await writer.wait_closed()
+        finally:
+            return
+
+    seq = SequenceGenerator()
+    bound = False
+
+    try:
+        first_pdu = await read_pdu_from_stream(reader, seq)
+        if first_pdu.command not in ("bind_transceiver", "bind_transmitter", "bind_receiver"):
+            raise ValueError("Первый PDU не bind_*")
+
+        try:
+            system_id = first_pdu.system_id.decode("ascii", "ignore")
+        except Exception:
+            system_id = "?"
+        L.info(f"Получен [cyan]BIND[/] от system_id='{system_id}' ([magenta]{first_pdu.command}[/])")
+
+        bound = True
+        writer.write(make_resp(first_pdu, ESME_ROK, seq).generate())
+        await writer.drain()
+        L.info("Авторизация успешна ([green]BOUND[/]). Слушаю входящие PDU...")
+
+        while bound:
+            p = await read_pdu_from_stream(reader, seq)
+
+            if p.command == "unbind":
+                bound = False
+                writer.write(make_resp(p, ESME_ROK, seq).generate())
+                await writer.drain()
+                L.info("[yellow]UNBIND[/] от клиента")
+                continue
+
+            if p.command == "enquire_link":
+                writer.write(make_resp(p, ESME_ROK, seq).generate())
+                await writer.drain()
+                L.debug("Ответил на ENQUIRE_LINK")
+                continue
+
+            if p.command not in ("submit_sm", "deliver_sm"):
+                continue
+
+            # RX summary
+            try:
+                src = (p.source_addr or b"").decode("ascii", "ignore")
+                dst = (p.destination_addr or b"").decode("ascii", "ignore")
+                clean = get_decoded_text(p).replace("\r", " ").replace("\n", " ")
+            except Exception as e:
+                src, dst, clean = "?", "?", ""
+                L.warning(f"Ошибка при формировании RX: {e}")
+
+            # Обработка с защитой: любые наши ошибки -> SYSERR(8), но сессию не рвём
+            db = SessionLocal()
+            try:
                 try:
-                    await client.send_pdu(pdu.make_response(command_status=ESME_ROK))
-                except Exception as send_err:
-                    log.error(f"Failed to send error response: {send_err}")
+                    status = _handle_deliver_sm(p, db)
+                except Exception as e:
+                    L.error(f"[red]Ошибка обработки в воркере[/]: {e}")
+                    status = ESME_RSYSERR
+            finally:
+                db.close()
+
+            # ЕДИНЫЙ итоговый лог
+            if status == ESME_ROK:
+                verdict = "[green]OUR (0) OK[/]"
+            elif status == ESME_RSUBMITFAIL:
+                verdict = "[yellow]ORPHAN (69) REJECT[/]"
+            elif status == ESME_RSYSERR:
+                verdict = "[red]SYSERR (8)[/]"
+            else:
+                verdict = f"[magenta]STATUS {status}[/]"
+
+            L.info(f"{verdict}: {p.command} src='{src}' dst='{dst}' text='{clean[:200]}'")
+
+            # Ответ клиенту
+            writer.write(make_resp(p, status, seq).generate())
+            await writer.drain()
+
+    except asyncio.IncompleteReadError:
+        L.info("Клиент отключился")
+    except ValueError as e:
+        # Например, «Некорректная длина PDU»: восстановить фрейминг невозможно — закрываем.
+        L.warning(f"[yellow]Некорректный пакет[/]: {e}. Соединение закрыто.")
+    except Exception as e:
+        L.exception(f"[red]Непредвиденная ошибка[/]: {e}")
+    finally:
+        writer.close()
+        try:
+            await writer.wait_closed()
+        finally:
+            L.info("Сессия закрыта")
+
+
+# -------------------------
+# Server bootstrap
+# -------------------------
+async def main():
+    host = os.getenv("SMPP_BIND_HOST", "0.0.0.0")
+
+    ports: List[int] = []
+    env_ports = os.getenv("SMPP_BIND_PORTS", "")
+    if env_ports.strip():
+        for t in env_ports.replace(";", ",").split(","):
+            t = t.strip()
+            if t.isdigit():
+                ports.append(int(t))
+    else:
+        p = os.getenv("SMPP_BIND_PORT", "40000")
+        try:
+            ports.append(int(p))
+        except ValueError:
+            ports.append(40000)
+
+    servers: List[asyncio.AbstractServer] = []
+    for port in ports:
+        srv = await asyncio.start_server(smpp_session, host, port)
+        log.info(f"[bold cyan]SMPP-сервер слушает[/] {host}:{port}")
+        servers.append(srv)
+
+    start_concatenation_worker()
+
+    try:
+        await asyncio.gather(*(srv.serve_forever() for srv in servers))
+    finally:
+        for srv in servers:
+            srv.close()
+            await srv.wait_closed()
+        stop_concatenation_worker()
+        log.info("[bold]Сервер полностью остановлен[/]")
+
 
 if __name__ == "__main__":
-    server = MySmppServer("MySmppServer")
-    log.info(f"Starting {server.name} on 0.0.0.0:40000...")
-    server.run(host="0.0.0.0", port=40000)
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        log.info("Получен KeyboardInterrupt — останавливаемся...")

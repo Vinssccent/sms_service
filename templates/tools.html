@@ -199,23 +199,27 @@
                             <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Страна</th>
                             <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Оператор</th>
                             <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Пример SMS</th>
-                            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Кол-во</th>
+                            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Кол-во SMS</th>
+                            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Уник. номера</th>
                             <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Действие</th>
                         </tr>
                     </thead>
                     <tbody class="bg-white divide-y divide-gray-200">
                         {% for row in orphan_traffic_data %}
                         <tr>
-                            <td class="px-6 py-4 whitespace-nowrap">{{ row.provider_name }}</td>
+                            <td class="px-6 py-4 whitespace-nowrap">{{ row.provider_name or 'N/A' }}</td>
                             <td class="px-6 py-4 whitespace-nowrap">{{ row.source_addr }}</td>
-                            <td class="px-6 py-4 whitespace-nowrap">{{ row.country_name }}</td>
+                            <td class="px-6 py-4 whitespace-nowrap">{{ row.country_name or 'N/A' }}</td>
                             <td class="px-6 py-4 whitespace-nowrap">{{ row.operator_name or 'N/A' }}</td>
                             <td class="px-6 py-4 max-w-xs truncate"><code title="{{ row.sample_text }}">{{ row.sample_text }}</code></td>
                             <td class="px-6 py-4"><span class="px-2 py-1 text-xs font-semibold rounded-full bg-blue-100 text-blue-800">{{ row.sms_count }}</span></td>
-                            <td class="px-6 py-4"><a href="/tools/orphan-numbers-detail?provider_id={{ row.provider_id }}&source_addr={{ row.source_addr }}&country_id={{ row.country_id }}{% if row.operator_id %}&operator_id={{ row.operator_id }}{% endif %}" class="text-indigo-600 hover:text-indigo-900">Посмотреть номера</a></td>
+                            <td class="px-6 py-4"><span class="px-2 py-1 text-xs font-semibold rounded-full bg-slate-100 text-slate-800">{{ row.unique_numbers_count }}</span></td>
+                            <td class="px-6 py-4">
+                                <a href="/tools/orphan-numbers-detail?source_addr={{ row.source_addr }}&provider_id={{ row.provider_id or '' }}&country_id={{ row.country_id or '' }}&operator_id={{ row.operator_id or '' }}" class="text-indigo-600 hover:text-indigo-900">Посмотреть номера</a>
+                            </td>
                         </tr>
                         {% else %}
-                        <tr><td colspan="7" class="text-center py-8 text-gray-500">Нет данных для анализа по заданным фильтрам.</td></tr>
+                        <tr><td colspan="8" class="text-center py-8 text-gray-500">Нет данных для анализа по заданным фильтрам.</td></tr>
                         {% endfor %}
                     </tbody>
                 </table>

@@ -1,21 +1,16 @@
 # Logs
 *.log
 logs/
-
 # PIDs
 *.pid
-
 # Python
 __pycache__/
 *.pyc
-
 # Virtual env
 venv/
-
 # Backups / dumps / archives
 backups/
 *.dump
 *.tar.gz
-
 # OS noise
 .DS_Store

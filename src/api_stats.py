@@ -20,7 +20,7 @@ def get_db():
         db.close()
 
 @router.get("/api-stats", tags=["Tools"], summary="Страница статистики по API")
-async def get_api_stats_page(
+def get_api_stats_page(
     request: Request,
     api_key_id: int = Query(None),
     period: str = Query("today"),

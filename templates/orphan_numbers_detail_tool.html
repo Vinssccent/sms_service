@@ -1,55 +1,113 @@
 <!DOCTYPE html>
 <html lang="ru">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Список номеров | Панель управления</title>
-    <script src="https://cdn.tailwindcss.com"></script>
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
-    <style>
-        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
-        body { font-family: 'Inter', sans-serif; background-color: #f8fafc; }
-    </style>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Список номеров | Панель управления</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="stylesheet"
+        href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css"/>
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
+    body { font-family: 'Inter', sans-serif; background-color: #f8fafc; }
+  </style>
 </head>
 <body class="bg-gray-50">
 <div class="container mx-auto px-4 py-8">
-    <div class="bg-white p-8 rounded-lg shadow-md">
-        <div class="flex justify-between items-center mb-6 border-b pb-4">
-            <div>
-                <h1 class="text-2xl font-bold text-gray-800">Список номеров</h1>
-                <p class="text-gray-500 mt-1">Поставщик: <span class="font-semibold text-gray-700">{{ provider_name }}</span> / Сендер: <span class="font-semibold text-gray-700">{{ source_addr }}</span> / Страна: <span class="font-semibold text-gray-700">{{ country_name }}</span> / Оператор: <span class="font-semibold text-gray-700">{{ operator_name }}</span></p>
-            </div>
-            <a href="{{ request.url_for('get_tools_page') }}?tab=orphan-traffic-pane" class="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition inline-flex items-center">
-                <i class="fas fa-arrow-left mr-2"></i> Назад к анализу
-            </a>
-        </div>
+  <div class="bg-white p-8 rounded-lg shadow-md">
+    <div class="flex justify-between items-center mb-6 border-b pb-4">
+      <div>
+        <h1 class="text-2xl font-bold text-gray-800">Список номеров</h1>
+        <p class="text-gray-500 mt-1">
+          Поставщик:
+          <span class="font-semibold text-gray-700">{{ provider_name }}</span>
+          /
+          Сендер:
+          <span class="font-semibold text-gray-700">{{ source_addr }}</span>
+          /
+          Страна:
+          <span class="font-semibold text-gray-700">{{ country_name }}</span>
+          /
+          Оператор:
+          <span class="font-semibold text-gray-700">{{ operator_name }}</span>
+        </p>
+      </div>
 
-        <div class="mb-6 flex space-x-2">
-            <button id="copy-btn" class="px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition inline-flex items-center">
-                <i class="fas fa-copy mr-2"></i> Копировать номера
-            </button>
-            <a href="{{ request.url.replace_query_params(format='csv') }}" class="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition inline-flex items-center">
-                <i class="fas fa-file-csv mr-2"></i> Скачать CSV
-            </a>
-        </div>
-
-        <div class="w-full">
-            <textarea id="numbers-textarea" class="w-full h-96 p-4 border border-gray-300 rounded-lg font-mono text-sm bg-gray-50" readonly>{{ numbers | join('\n') }}</textarea>
-        </div>
-        <p class="text-sm text-gray-500 mt-2">Всего найдено уникальных номеров: {{ numbers | length }}</p>
+      <a href="{{ request.url_for('get_tools_page') }}?tab=orphan-traffic-pane"
+         class="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition inline-flex items-center">
+        <i class="fas fa-arrow-left mr-2"></i> Назад к анализу
+      </a>
     </div>
+
+    <div class="mb-6 flex space-x-2">
+      <button id="copy-btn"
+              class="px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition inline-flex items-center">
+        <i class="fas fa-copy mr-2"></i> Копировать номера
+      </button>
+    </div>
+
+    <div class="w-full">
+      <textarea id="numbers-textarea"
+                class="w-full h-96 p-4 border border-gray-300 rounded-lg font-mono text-sm bg-gray-50"
+                readonly>{{ numbers | join('\n') }}</textarea>
+    </div>
+    <p class="text-sm text-gray-500 mt-2">
+      Всего найдено уникальных номеров: <span class="font-semibold">{{ numbers | length }}</span>
+    </p>
+  </div>
 </div>
 
 <script>
-document.getElementById('copy-btn').addEventListener('click', function() {
+  async function copyToClipboard(text) {
+    // Пытаемся через современный API
+    if (navigator.clipboard && window.isSecureContext) {
+      try {
+        await navigator.clipboard.writeText(text);
+        return true;
+      } catch (_) { /* fallback ниже */ }
+    }
+
+    // Фоллбек через скрытый textarea
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.style.position = 'fixed';
+    ta.style.opacity = '0';
+    ta.style.left = '-10000px';
+    document.body.appendChild(ta);
+    ta.focus();
+    ta.select();
+    try {
+      const ok = document.execCommand('copy');
+      document.body.removeChild(ta);
+      return ok;
+    } catch (e) {
+      document.body.removeChild(ta);
+      return false;
+    }
+  }
+
+  document.getElementById('copy-btn').addEventListener('click', async function () {
+    const btn = this;
     const textarea = document.getElementById('numbers-textarea');
-    textarea.select();
-    document.execCommand('copy');
-    this.innerHTML = '<i class="fas fa-check mr-2"></i> Скопировано!';
+    const text = textarea.value;
+
+    const ok = await copyToClipboard(text);
+    if (ok) {
+      btn.innerHTML = '<i class="fas fa-check mr-2"></i> Скопировано!';
+      btn.classList.remove('bg-indigo-600', 'hover:bg-indigo-700');
+      btn.classList.add('bg-green-600', 'hover:bg-green-700');
+    } else {
+      btn.innerHTML = '<i class="fas fa-exclamation-triangle mr-2"></i> Не удалось скопировать';
+      btn.classList.remove('bg-indigo-600', 'hover:bg-indigo-700');
+      btn.classList.add('bg-red-600', 'hover:bg-red-700');
+    }
+
     setTimeout(() => {
-        this.innerHTML = '<i class="fas fa-copy mr-2"></i> Копировать номера';
+      btn.innerHTML = '<i class="fas fa-copy mr-2"></i> Копировать номера';
+      btn.classList.remove('bg-green-600', 'hover:bg-green-700', 'bg-red-600', 'hover:bg-red-700');
+      btn.classList.add('bg-indigo-600', 'hover:bg-indigo-700');
     }, 2000);
-});
+  });
 </script>
 
 </body>

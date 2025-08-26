@@ -39,7 +39,7 @@ def get_db():
 # Главная страница инструментов
 # --------------------------
 @router.get("/tools", tags=["Tools"], summary="Страница со всеми инструментами")
-async def get_tools_page(
+def get_tools_page(
     request: Request,
     db: Session = Depends(get_db),
     start_date_str: Optional[str] = None,

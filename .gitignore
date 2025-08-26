@@ -1,14 +1,20 @@
-# Virtual Environment
-venv/
+# Logs
+*.log
+logs/
+# PIDs
+*.pid
+
+# Python
 __pycache__/
 *.pyc
-*.pyo
-*.pyd
 
-# Environment files
-.env
+# Virtual env
+venv/
 
-# IDE and editor files
-.idea/
-.vscode/
-*.swp
+# Backups / dumps / archives
+backups/
+*.dump
+*.tar.gz
+
+# OS noise
+.DS_Store

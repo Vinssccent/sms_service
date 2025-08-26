@@ -15,6 +15,9 @@ class Service(Base):
     name = Column(String, unique=True, nullable=False)
     code = Column(String(10), unique=True, nullable=False, index=True)
     icon_class = Column(String, nullable=True)
+    # --- ВОТ ЭТУ СТРОКУ Я ДОБАВИЛ ---
+    allowed_senders = Column(Text, nullable=True, comment="Через запятую: Google,GO,CloudOTP")
+    # ---------------------------------
     daily_limit = Column(Integer, nullable=True, comment="Default daily limit if no specific rule applies")
     sessions = relationship("Session", back_populates="service", cascade="all, delete-orphan")
     service_limits = relationship("ServiceLimit", back_populates="service", cascade="all, delete-orphan", lazy="selectin")
@@ -138,7 +141,6 @@ class SmsMessage(Base):
     code = Column(String(20), nullable=True, index=True)
     received_at = Column(DateTime(timezone=True), server_default=func.now(), index=True)
     session = relationship("Session", back_populates="sms_messages")
-    __table_args__ = (Index('ix_sms_code', 'code'),)
 
     def __str__(self) -> str:
         return f'{self.text[:50]}...' if len(self.text) > 50 else self.text
@@ -176,6 +178,8 @@ class Admin(Base):
 
 class OrphanSms(Base):
     __tablename__ = 'orphan_sms'
+    client_ip = Column(String(45), index=True, nullable=True)
+    system_id = Column(String(64), index=True, nullable=True)
     id = Column(Integer, primary_key=True)
     phone_number_str = Column(String, nullable=False, index=True)
     source_addr = Column(String, nullable=False, index=True)

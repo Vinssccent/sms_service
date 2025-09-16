@@ -8,14 +8,6 @@ import threading
 import re
 from typing import Optional, Any, Dict, Tuple, Callable
 
-# --- optional Redis (используем, если доступен) ---
-try:
-    import redis  # type: ignore
-    _redis_import_ok = True
-except Exception:
-    redis = None  # type: ignore
-    _redis_import_ok = False
-
 import smpplib.client  # type: ignore
 import smpplib.exceptions  # type: ignore
 
@@ -25,6 +17,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from src.database import SessionLocal
 from src import models
 from src.utils import normalize_phone_number, build_phone_candidates
+from src.deps import get_redis
 
 log = logging.getLogger("src.smpp_worker")
 
@@ -38,15 +31,11 @@ ESME_RSUBMITFAIL = 69         # submit_sm failed (для REJECT живого т�
 # ===============================
 # Redis client (optional)
 # ===============================
-redis_client = None
-if _redis_import_ok:
-    try:
-        redis_client = redis.Redis(decode_responses=True)  # type: ignore
-        redis_client.ping()
-        log.info("SMPP Worker: Redis connected")
-    except Exception as e:
-        log.warning("SMPP Worker: Redis not available (%s) — continue without it", e)
-        redis_client = None
+redis_client = get_redis()
+if redis_client:
+    log.info("SMPP Worker: Redis клиент получен через deps.")
+else:
+    log.warning("SMPP Worker: Redis недоступен, работаем без кэша.")
 
 # ===============================
 # Concat buffer (in-memory)

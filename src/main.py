@@ -28,7 +28,6 @@ from starlette_admin.views import Link
 from starlette_admin.fields import StringField, EnumField
 from starlette.middleware.sessions import SessionMiddleware
 from prometheus_fastapi_instrumentator import Instrumentator
-import redis
 from src.database import SessionLocal, engine
 from src import models, tools, api_stats, tester
 from src.utils import normalize_phone_number
@@ -37,6 +36,7 @@ from fastapi.responses import FileResponse
 from pathlib import Path
 from psycopg.types.numeric import NumericLoader
 from src.revenue import router as revenue_router
+from src.deps import get_redis
 
 
 
@@ -86,20 +86,11 @@ INCR_LIMITS_ON_SUCCESS = os.getenv("INCR_LIMITS_ON_SUCCESS", "0") == "1"
 # =========================
 #     Redis (опционально)
 # =========================
-try:
-    redis_client = redis.Redis(
-        host=os.getenv("REDIS_HOST", "127.0.0.1"),
-        port=int(os.getenv("REDIS_PORT", "6379")),
-        decode_responses=True,
-        socket_timeout=0.2,
-        retry_on_timeout=True,
-        health_check_interval=30,
-    )
-    redis_client.ping()
-    log.info("✓ Main: Успешное подключение к Redis.")
-except redis.exceptions.ConnectionError as e:
-    log.error(f"🔥 Main: Не удалось подключиться к Redis: {e}.")
-    redis_client = None
+redis_client = get_redis()
+if redis_client:
+    log.info("✓ Main: Redis клиент инициализирован через deps.")
+else:
+    log.warning("Main: Redis недоступен, продолжаем работу без кэша.")
 
 # =========================
 #   Фоновые процессы

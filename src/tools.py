@@ -23,13 +23,12 @@ from .database import SessionLocal
 from . import models
 from .utils import normalize_phone_number
 from . import main as main_app
+from .deps import get_redis
 
-# --- Redis JSON cache helpers (используем redis_client из main) ---
+# --- Redis JSON cache helpers (используем общий redis_client из deps) ---
 import json
-try:
-    from src.main import redis_client
-except Exception:
-    redis_client = None
+
+redis_client = get_redis()
 
 def _cache_get_json(key: str):
     if not redis_client:

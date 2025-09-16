@@ -1,16 +1,46 @@
 # src/api_stats.py
 # -*- coding: utf-8 -*-
 import datetime
-from fastapi import Request, Depends, APIRouter, Query
+from typing import Optional
+
+from fastapi import Request, Depends, APIRouter
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 from starlette.templating import Jinja2Templates
+
+from pydantic import BaseModel, field_validator
 
 from .database import SessionLocal
 from . import models
 
 router = APIRouter()
 templates = Jinja2Templates(directory="templates")
+
+
+class ApiStatsParams(BaseModel):
+    api_key_id: Optional[int] = None
+    period: str = "today"
+
+    @field_validator("api_key_id", mode="before")
+    @classmethod
+    def _parse_api_key_id(cls, value):
+        if value is None:
+            return None
+        if isinstance(value, str):
+            value = value.strip()
+            if not value:
+                return None
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return None
+
+    @field_validator("period", mode="before")
+    @classmethod
+    def _normalize_period(cls, value):
+        if value is None:
+            return "today"
+        return str(value).strip() or "today"
 
 def get_db():
     db = SessionLocal()
@@ -22,10 +52,12 @@ def get_db():
 @router.get("/api-stats", tags=["Tools"], summary="Страница статистики по API")
 def get_api_stats_page(
     request: Request,
-    api_key_id: int = Query(None),
-    period: str = Query("today"),
+    params: ApiStatsParams = Depends(),
     db: Session = Depends(get_db)
 ):
+    api_key_id = params.api_key_id
+    period = params.period
+
     api_keys = db.query(models.ApiKey).filter(models.ApiKey.is_active == True).all()
     context = {
         "request": request,

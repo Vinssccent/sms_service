@@ -19,6 +19,8 @@ from starlette.templating import Jinja2Templates
 from sqlalchemy import func, text
 from sqlalchemy.orm import Session, selectinload
 
+from pydantic import BaseModel, field_validator
+
 from .database import SessionLocal
 from . import models
 from .utils import normalize_phone_number
@@ -53,6 +55,85 @@ log = logging.getLogger(__name__)
 
 templates = Jinja2Templates(directory="templates")
 router = APIRouter()
+
+
+class ToolsQueryParams(BaseModel):
+    start_date_str: Optional[str] = None
+    end_date_str: Optional[str] = None
+    api_key_str: Optional[str] = None
+    stat_group_by: str = "service"
+    stat_provider_id: Optional[int] = None
+    stat_country_id: Optional[int] = None
+    stat_service_id: Optional[int] = None
+    ot_search_sender: str = ""
+    ot_provider_id: Optional[int] = None
+    ot_country_id: Optional[int] = None
+    ot_operator_id: Optional[int] = None
+    ot_page: int = 1
+
+    @field_validator("start_date_str", "end_date_str", "api_key_str", mode="before")
+    @classmethod
+    def _normalize_optional_str(cls, value):
+        if value is None:
+            return None
+        if isinstance(value, str):
+            value = value.strip()
+            return value or None
+        return str(value)
+
+    @field_validator("stat_group_by", mode="before")
+    @classmethod
+    def _normalize_group_by(cls, value):
+        if value is None:
+            return "service"
+        if isinstance(value, str):
+            value = value.strip()
+            return value or "service"
+        return str(value)
+
+    @field_validator("ot_search_sender", mode="before")
+    @classmethod
+    def _normalize_search_sender(cls, value):
+        if value is None:
+            return ""
+        return str(value).strip()
+
+    @field_validator(
+        "stat_provider_id",
+        "stat_country_id",
+        "stat_service_id",
+        "ot_provider_id",
+        "ot_country_id",
+        "ot_operator_id",
+        mode="before",
+    )
+    @classmethod
+    def _parse_optional_int(cls, value):
+        if value is None:
+            return None
+        if isinstance(value, str):
+            value = value.strip()
+            if not value:
+                return None
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return None
+
+    @field_validator("ot_page", mode="before")
+    @classmethod
+    def _normalize_page(cls, value):
+        if value is None:
+            return 1
+        if isinstance(value, str):
+            value = value.strip()
+            if not value:
+                return 1
+        try:
+            page = int(value)
+        except (TypeError, ValueError):
+            return 1
+        return max(1, page)
 
 
 def get_db():
@@ -116,11 +197,13 @@ def get_cached_services() -> List[models.Service]:
 def get_tools_page(
     request: Request,
     db: Session = Depends(get_db),
-    start_date_str: Optional[str] = None,
-    end_date_str: Optional[str] = None,
-    api_key_str: Optional[str] = None
+    params: ToolsQueryParams = Depends(),
 ):
     t_start = time.time()
+
+    start_date_str = params.start_date_str
+    end_date_str = params.end_date_str
+    api_key_str = params.api_key_str
 
     # --- Период (UTC) ---
     try:
@@ -144,17 +227,16 @@ def get_tools_page(
     oper_map = {o.id: o.name for o in operators}
 
     # --- Query-параметры ---
-    q = request.query_params
-    stat_group_by = (q.get("stat_group_by") or "service").strip()
-    stat_provider_id = int(q.get("stat_provider_id")) if (q.get("stat_provider_id") or "").isdigit() else None
-    stat_country_id  = int(q.get("stat_country_id"))  if (q.get("stat_country_id")  or "").isdigit() else None
-    stat_service_id  = int(q.get("stat_service_id"))  if (q.get("stat_service_id")  or "").isdigit() else None
+    stat_group_by = params.stat_group_by
+    stat_provider_id = params.stat_provider_id
+    stat_country_id = params.stat_country_id
+    stat_service_id = params.stat_service_id
 
-    ot_search_sender = (q.get("ot_search_sender") or "").strip()
-    ot_provider_id = int(q.get("ot_provider_id")) if (q.get("ot_provider_id") or "").isdigit() else None
-    ot_country_id  = int(q.get("ot_country_id"))  if (q.get("ot_country_id")  or "").isdigit() else None
-    ot_operator_id = int(q.get("ot_operator_id")) if (q.get("ot_operator_id") or "").isdigit() else None
-    ot_page = max(1, int(q.get("ot_page") or 1))
+    ot_search_sender = params.ot_search_sender
+    ot_provider_id = params.ot_provider_id
+    ot_country_id = params.ot_country_id
+    ot_operator_id = params.ot_operator_id
+    ot_page = params.ot_page
     per_page = 20
 
     # --- Фильтры для статистики ---

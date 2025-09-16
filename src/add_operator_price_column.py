@@ -8,12 +8,11 @@
     python -m src.add_operator_price_column
 """
 from __future__ import annotations
-import logging
 from sqlalchemy import text
 from src.database import engine
+from src.logging_setup import configure_main_logging
 
-log = logging.getLogger("add_operator_price")
-logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
+log = configure_main_logging(logger_name="add_operator_price")
 
 SQLS = [
     "ALTER TABLE operators ADD COLUMN IF NOT EXISTS price_eur_cent INTEGER",

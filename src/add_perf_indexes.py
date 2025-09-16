@@ -16,12 +16,11 @@
 from __future__ import annotations
 
 import sys
-import logging
 from sqlalchemy import text
 from src.database import engine
+from src.logging_setup import configure_main_logging
 
-log = logging.getLogger("perf.indexes")
-logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
+log = configure_main_logging(logger_name="perf.indexes")
 
 SQLS = [
     # ---- phone_numbers: быстрый подбор без COUNT/OFFSET ----

@@ -32,7 +32,7 @@ import redis
 from src.database import SessionLocal, engine
 from src import models, tools, api_stats, tester
 from src.utils import normalize_phone_number
-from src.logging_setup import setup_logging
+from src.logging_setup import configure_main_logging
 from fastapi.responses import FileResponse
 from pathlib import Path
 from psycopg.types.numeric import NumericLoader
@@ -41,8 +41,7 @@ from src.revenue import router as revenue_router
 
 
 # ---- logging ----
-setup_logging()
-log = logging.getLogger("main")
+log = configure_main_logging()
 
 # ======================================================================
 #  ГЛОБАЛЬНЫЙ АДАПТЕР ТИПОВ ДЛЯ POSTGRESQL

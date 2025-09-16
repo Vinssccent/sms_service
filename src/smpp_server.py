@@ -7,13 +7,13 @@ import asyncio
 import struct
 import random
 import ipaddress
-import logging
 import time
 from typing import Iterable, List, Optional, Set, Tuple
 
 from sqlalchemy import text
 from smpplib import smpp, pdu
 
+from src.logging_setup import ConnAdapter, configure_smpp_logging
 from src.database import SessionLocal
 from src import models
 from src.smpp_worker import (
@@ -21,23 +21,9 @@ from src.smpp_worker import (
     start_concatenation_worker, stop_concatenation_worker,
     run_smpp_provider_loop, ESME_ROK, ESME_RSUBMITFAIL, ESME_RSYSERR,
 )
-from src.logging_setup import ConnAdapter
 from src.settings import settings
 
-# --------- logging ----------
-try:
-    from rich.logging import RichHandler
-    from rich.console import Console
-    console = Console(force_terminal=True, color_system="truecolor")
-    handler = RichHandler(console=console, rich_tracebacks=True, markup=True)
-    logging.basicConfig(level=logging.INFO, handlers=[handler], format="%(message)s")
-except Exception:
-    logging.basicConfig(level=logging.INFO)
-
-for n in ("sqlalchemy", "sqlalchemy.engine", "sqlalchemy.orm", "sqlalchemy.pool"):
-    logging.getLogger(n).setLevel(logging.WARNING)
-log = logging.getLogger("smpp.server")
-logging.getLogger("src.smpp_worker").setLevel(logging.INFO)
+log = configure_smpp_logging(logger_name="smpp.server")
 
 # ---------------- Sequence helper ----------------
 class SequenceGenerator:

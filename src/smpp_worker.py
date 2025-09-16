@@ -2,7 +2,6 @@
 # -*- coding: utf-8 -*-
 from __future__ import annotations
 
-import logging
 import time
 import threading
 import re
@@ -25,8 +24,9 @@ from sqlalchemy.exc import SQLAlchemyError
 from src.database import SessionLocal
 from src import models
 from src.utils import normalize_phone_number, build_phone_candidates
+from src.logging_setup import configure_smpp_logging
 
-log = logging.getLogger("src.smpp_worker")
+log = configure_smpp_logging(logger_name="src.smpp_worker")
 
 # ===============================
 # SMPP status constants (subset)

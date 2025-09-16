@@ -5,10 +5,16 @@ import sys
 import os
 import re
 
-__all__ = ["setup_logging", "ConnAdapter"]
+__all__ = [
+    "setup_logging",
+    "ConnAdapter",
+    "configure_main_logging",
+    "configure_smpp_logging",
+]
 
 # Удаляем разметку [green]...[/] когда пишем в plain
 _MARKUP_RE = re.compile(r"\[(\/)?[a-zA-Z0-9#,+\-\.: ]+\]")
+_CONFIGURED = False
 
 def _strip_markup(s: str) -> str:
     return _MARKUP_RE.sub("", s)
@@ -168,3 +174,33 @@ def setup_logging(level: str | None = None) -> None:
     logging.getLogger("uvicorn.error").setLevel(logging.INFO)
     logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
     logging.getLogger("sqlalchemy").setLevel(logging.INFO)
+
+    global _CONFIGURED
+    _CONFIGURED = True
+
+
+def _ensure_configured(level: str | None) -> None:
+    if level is not None or not _CONFIGURED:
+        setup_logging(level)
+
+
+def configure_main_logging(
+    level: str | None = None,
+    *,
+    logger_name: str = "main",
+) -> logging.Logger:
+    """Инициализирует логирование приложения и возвращает запрошенный логгер."""
+
+    _ensure_configured(level)
+    return logging.getLogger(logger_name)
+
+
+def configure_smpp_logging(
+    level: str | None = None,
+    *,
+    logger_name: str = "smpp.server",
+) -> logging.Logger:
+    """Настраивает логирование для компонентов SMPP и возвращает логгер."""
+
+    _ensure_configured(level)
+    return logging.getLogger(logger_name)

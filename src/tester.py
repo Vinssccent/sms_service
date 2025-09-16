@@ -11,23 +11,13 @@ from starlette.responses import JSONResponse, Response
 from starlette.templating import Jinja2Templates
 
 from . import models
-from .database import SessionLocal
+from src.deps import get_db
 from .utils import normalize_phone_number
 
 log = logging.getLogger(__name__)
 
 templates = Jinja2Templates(directory="templates")
 router = APIRouter()
-
-
-def get_db():
-    db = SessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
-
-
 @router.get("/tester", tags=["Tools"], include_in_schema=False)
 async def get_standalone_tester_page(request: Request, db: Session = Depends(get_db)):
     countries = db.query(models.Country).order_by(models.Country.name).all()

@@ -11,19 +11,11 @@ from starlette.responses import StreamingResponse
 from sqlalchemy.orm import Session
 from sqlalchemy import func, cast, Numeric
 
-from .database import SessionLocal
 from . import models
+from src.deps import get_db
 
 router = APIRouter()
 templates = Jinja2Templates(directory="templates")
-
-def get_db():
-    db = SessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
-
 def _parse_date(s: Optional[str], default_today: bool = False) -> Optional[datetime.datetime]:
     if not s:
         return (datetime.datetime.now(datetime.timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)

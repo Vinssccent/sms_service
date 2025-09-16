@@ -23,6 +23,7 @@ from .database import SessionLocal
 from . import models
 from .utils import normalize_phone_number
 from . import main as main_app
+from src.deps import get_db
 
 # --- Redis JSON cache helpers (используем redis_client из main) ---
 import json
@@ -53,14 +54,6 @@ log = logging.getLogger(__name__)
 
 templates = Jinja2Templates(directory="templates")
 router = APIRouter()
-
-
-def get_db():
-    db = SessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
 
 # вспомогательный генератор случайного порядка (для NOT NULL sort_order)
 def _make_sort_order() -> int:

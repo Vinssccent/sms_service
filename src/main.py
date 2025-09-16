@@ -37,6 +37,7 @@ from fastapi.responses import FileResponse
 from pathlib import Path
 from psycopg.types.numeric import NumericLoader
 from src.revenue import router as revenue_router
+from src.deps import get_db
 
 
 
@@ -479,13 +480,6 @@ app.include_router(revenue_router)
 #  API роуты
 # --------------------------
 api_router = APIRouter()
-
-def get_db():
-    db = SessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
 
 # ======== утилиты для "сегодня" (UTC) и кэша счётчиков ========
 def _today_window_utc() -> Tuple[datetime.datetime, datetime.datetime]:

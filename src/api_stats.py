@@ -6,19 +6,11 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 from starlette.templating import Jinja2Templates
 
-from .database import SessionLocal
 from . import models
+from src.deps import get_db
 
 router = APIRouter()
 templates = Jinja2Templates(directory="templates")
-
-def get_db():
-    db = SessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
-
 @router.get("/api-stats", tags=["Tools"], summary="Страница статистики по API")
 def get_api_stats_page(
     request: Request,

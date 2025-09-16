@@ -290,35 +290,42 @@ def get_decoded_text(pdu) -> str:
     text, _ = _maybe_reassemble_concat(pdu, src, dst)
     return text
 
-
 # =================================================================
-# >>> НАЧАЛО ОБНОВЛЕННОЙ ЛОГИКИ С УЧЕТОМ NITRO <<<
+# >>> НАЧАЛО ОБНОВЛЕННОЙ И УЛУЧШЕННОЙ ЛОГИКИ <<<
 # =================================================================
 def is_sender_allowed_for_service(sender: str, service: models.Service) -> bool:
     """
-    Обновленная функция для гибкой проверки отправителя.
+    Гибкая и надежная проверка отправителя.
+    Удаляет все пробелы и приводит к нижнему регистру перед сравнением.
     """
     if not service:
         return False
 
-    sender_lower = sender.lower()
+    allowed_senders_raw = service.allowed_senders or ""
     
-    if service.allowed_senders:
-        # Если в поле стоит одна звездочка, сервис "всеядный" - разрешаем всё.
-        if service.allowed_senders.strip() == '*':
+    # Если в поле стоит одна звездочка, сервис "всеядный" - разрешаем всё.
+    if allowed_senders_raw.strip() == '*':
+        return True
+    
+    # 1. Нормализуем имя пришедшего отправителя: убираем пробелы, нижний регистр.
+    #    Пример: "Google OTP" -> "googleotp"
+    normalized_sender = "".join(sender.lower().split())
+    if not normalized_sender:
+        return False
+
+    # 2. Нормализуем список разрешенных отправителей из базы данных.
+    if allowed_senders_raw:
+        # Пример: "GoogleOTP, Google OTP" -> {"googleotp"}
+        allowed_set = {"".join(s.lower().split()) for s in allowed_senders_raw.split(',') if s.strip()}
+        if normalized_sender in allowed_set:
             return True
 
-        # Проверка по списку разрешенных отправителей
-        allowed_list = {s.strip().lower() for s in service.allowed_senders.split(',') if s.strip()}
-        return sender_lower in allowed_list
-
-    # Если списка нет, проверка по основному имени сервиса
-    service_name_lower = (service.name or "").lower()
-    return sender_lower == service_name_lower
+    # 3. Fallback: если списка нет, проверяем по основному имени сервиса (тоже нормализованному)
+    normalized_service_name = "".join((service.name or "").lower().split())
+    return normalized_sender == normalized_service_name
 # =================================================================
 # >>> КОНЕЦ ОБНОВЛЕННОЙ ЛОГИКИ <<<
 # =================================================================
-
 
 def _handle_deliver_sm(pdu, db: SASession, ctx: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     try:

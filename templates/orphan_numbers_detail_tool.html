@@ -19,17 +19,10 @@
       <div>
         <h1 class="text-2xl font-bold text-gray-800">Список номеров</h1>
         <p class="text-gray-500 mt-1">
-          Поставщик:
-          <span class="font-semibold text-gray-700">{{ provider_name }}</span>
-          /
-          Сендер:
-          <span class="font-semibold text-gray-700">{{ source_addr }}</span>
-          /
-          Страна:
-          <span class="font-semibold text-gray-700">{{ country_name }}</span>
-          /
-          Оператор:
-          <span class="font-semibold text-gray-700">{{ operator_name }}</span>
+          Поставщик: <span class="font-semibold text-gray-700">{{ provider_name }}</span> /
+          Сендер: <span class="font-semibold text-gray-700">{{ source_addr }}</span> /
+          Страна: <span class="font-semibold text-gray-700">{{ country_name }}</span> /
+          Оператор: <span class="font-semibold text-gray-700">{{ operator_name }}</span>
         </p>
       </div>
 
@@ -38,6 +31,36 @@
         <i class="fas fa-arrow-left mr-2"></i> Назад к анализу
       </a>
     </div>
+
+    <!-- Форма периода и экспорт -->
+    <form method="get" action="/tools/orphan-numbers-detail" class="bg-gray-50 p-4 rounded-lg mb-6 grid md:grid-cols-5 gap-4 items-end">
+      <input type="hidden" name="source_addr" value="{{ source_addr }}">
+      {% if provider_id is not none %}<input type="hidden" name="provider_id" value="{{ provider_id }}">{% endif %}
+      {% if country_id  is not none %}<input type="hidden" name="country_id"  value="{{ country_id }}">{% endif %}
+      {% if operator_id is not none %}<input type="hidden" name="operator_id" value="{{ operator_id }}">{% endif %}
+
+      <div>
+        <label class="block text-sm text-gray-700 mb-1">Начало (локальное)</label>
+        <input type="datetime-local" name="start_date_str" class="w-full px-3 py-2 border rounded-lg"
+               value="{{ start_date_str }}">
+      </div>
+      <div>
+        <label class="block text-sm text-gray-700 mb-1">Конец (локальное)</label>
+        <input type="datetime-local" name="end_date_str" class="w-full px-3 py-2 border rounded-lg"
+               value="{{ end_date_str }}">
+      </div>
+      <div class="md:col-span-2 flex gap-3">
+        <button type="submit" class="px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700">
+          Применить период
+        </button>
+        <a
+          class="px-4 py-2 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 inline-flex items-center"
+          href="/tools/orphan-numbers-detail?source_addr={{ source_addr }}{% if provider_id is not none %}&provider_id={{ provider_id }}{% endif %}{% if country_id is not none %}&country_id={{ country_id }}{% endif %}{% if operator_id is not none %}&operator_id={{ operator_id }}{% endif %}&start_date_str={{ start_date_str }}&end_date_str={{ end_date_str }}&format=csv"
+        >
+          <i class="fas fa-file-csv mr-2"></i> Скачать CSV
+        </a>
+      </div>
+    </form>
 
     <div class="mb-6 flex space-x-2">
       <button id="copy-btn"
@@ -59,56 +82,23 @@
 
 <script>
   async function copyToClipboard(text) {
-    // Пытаемся через современный API
     if (navigator.clipboard && window.isSecureContext) {
-      try {
-        await navigator.clipboard.writeText(text);
-        return true;
-      } catch (_) { /* fallback ниже */ }
+      try { await navigator.clipboard.writeText(text); return true; } catch (_) {}
     }
-
-    // Фоллбек через скрытый textarea
     const ta = document.createElement('textarea');
-    ta.value = text;
-    ta.style.position = 'fixed';
-    ta.style.opacity = '0';
-    ta.style.left = '-10000px';
-    document.body.appendChild(ta);
-    ta.focus();
-    ta.select();
-    try {
-      const ok = document.execCommand('copy');
-      document.body.removeChild(ta);
-      return ok;
-    } catch (e) {
-      document.body.removeChild(ta);
-      return false;
-    }
+    ta.value = text; ta.style.position = 'fixed'; ta.style.opacity = '0'; ta.style.left = '-10000px';
+    document.body.appendChild(ta); ta.focus(); ta.select();
+    try { const ok = document.execCommand('copy'); document.body.removeChild(ta); return ok; }
+    catch (e) { document.body.removeChild(ta); return false; }
   }
 
   document.getElementById('copy-btn').addEventListener('click', async function () {
-    const btn = this;
-    const textarea = document.getElementById('numbers-textarea');
-    const text = textarea.value;
-
+    const btn = this, text = document.getElementById('numbers-textarea').value;
     const ok = await copyToClipboard(text);
-    if (ok) {
-      btn.innerHTML = '<i class="fas fa-check mr-2"></i> Скопировано!';
-      btn.classList.remove('bg-indigo-600', 'hover:bg-indigo-700');
-      btn.classList.add('bg-green-600', 'hover:bg-green-700');
-    } else {
-      btn.innerHTML = '<i class="fas fa-exclamation-triangle mr-2"></i> Не удалось скопировать';
-      btn.classList.remove('bg-indigo-600', 'hover:bg-indigo-700');
-      btn.classList.add('bg-red-600', 'hover:bg-red-700');
-    }
-
-    setTimeout(() => {
-      btn.innerHTML = '<i class="fas fa-copy mr-2"></i> Копировать номера';
-      btn.classList.remove('bg-green-600', 'hover:bg-green-700', 'bg-red-600', 'hover:bg-red-700');
-      btn.classList.add('bg-indigo-600', 'hover:bg-indigo-700');
-    }, 2000);
+    if (ok) { btn.innerHTML = '<i class="fas fa-check mr-2"></i> Скопировано!'; btn.classList.replace('bg-indigo-600','bg-green-600'); }
+    else   { btn.innerHTML = '<i class="fas fa-exclamation-triangle mr-2"></i> Не удалось'; btn.classList.replace('bg-indigo-600','bg-red-600'); }
+    setTimeout(() => { btn.innerHTML = '<i class="fas fa-copy mr-2"></i> Копировать номера'; btn.classList.remove('bg-green-600','bg-red-600'); btn.classList.add('bg-indigo-600'); }, 2000);
   });
 </script>
-
 </body>
 </html>

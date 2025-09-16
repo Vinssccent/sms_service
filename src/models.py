@@ -1,7 +1,8 @@
 # src/models.py
 # -*- coding: utf-8 -*-
 import uuid
-from sqlalchemy import Column, Integer, String, Boolean, ForeignKey, DateTime, Text, Index, UniqueConstraint, select
+import sqlalchemy as sa # <--- ВОТ ИСПРАВЛЕНИЕ. ЭТА СТРОКА ДОБАВЛЕНА.
+from sqlalchemy import Column, Integer, String, Boolean, ForeignKey, DateTime, Text, Index, UniqueConstraint, select, func, BigInteger, Enum, Numeric
 from sqlalchemy.orm import relationship, declarative_base
 from sqlalchemy.sql import func
 from sqlalchemy.ext.hybrid import hybrid_property
@@ -9,15 +10,14 @@ from starlette.requests import Request
 
 Base = declarative_base()
 
+
 class Service(Base):
     __tablename__ = 'services'
     id = Column(Integer, primary_key=True)
     name = Column(String, unique=True, nullable=False)
     code = Column(String(10), unique=True, nullable=False, index=True)
     icon_class = Column(String, nullable=True)
-    # --- ВОТ ЭТУ СТРОКУ Я ДОБАВИЛ ---
     allowed_senders = Column(Text, nullable=True, comment="Через запятую: Google,GO,CloudOTP")
-    # ---------------------------------
     daily_limit = Column(Integer, nullable=True, comment="Default daily limit if no specific rule applies")
     sessions = relationship("Session", back_populates="service", cascade="all, delete-orphan")
     service_limits = relationship("ServiceLimit", back_populates="service", cascade="all, delete-orphan", lazy="selectin")
@@ -63,13 +63,24 @@ class Country(Base):
 
 class Operator(Base):
     __tablename__ = 'operators'
+
     id = Column(Integer, primary_key=True)
     name = Column(String, nullable=False, index=True)
     country_id = Column(Integer, ForeignKey('countries.id', ondelete="CASCADE"), nullable=False)
     provider_id = Column(Integer, ForeignKey('providers.id', ondelete="CASCADE"), nullable=True)
+
+    # Старое поле (для совместимости, можно оставлять пустым):
+    price_eur_cent = Column(Integer, nullable=True, comment="Цена за 1 SMS в евроцентах")
+
+    # Новое точное поле в евро (например 0.017):
+    price_eur = Column(Numeric(10, 5), nullable=True, comment="Цена за 1 SMS в евро (десятичная)")
+
     country = relationship("Country", back_populates="operators")
     provider = relationship("Provider", back_populates="operators")
-    def __str__(self): return self.name
+
+    def __str__(self):
+        return self.name
+
     async def __admin_repr__(self, request: Request):
         return self.name
 
@@ -88,9 +99,23 @@ class Provider(Base):
     phone_numbers = relationship("PhoneNumber", back_populates="provider", cascade="all, delete-orphan")
     operators = relationship("Operator", back_populates="provider", cascade="all, delete-orphan")
     service_limits = relationship("ServiceLimit", back_populates="provider", cascade="all, delete-orphan")
+    allowed_ips = relationship("ProviderIP", back_populates="provider", cascade="all, delete-orphan")
     def __str__(self): return self.name
     async def __admin_repr__(self, request: Request):
         return self.name
+
+class ProviderIP(Base):
+    __tablename__ = 'provider_ips'
+    id = Column(Integer, primary_key=True)
+    provider_id = Column(Integer, ForeignKey('providers.id', ondelete="CASCADE"), nullable=False, index=True)
+    ip_cidr = Column(String(45), nullable=False)
+    is_active = Column(Boolean, default=True)
+    provider = relationship("Provider", back_populates="allowed_ips")
+    __table_args__ = (
+        UniqueConstraint('provider_id', 'ip_cidr', name='_provider_ip_uc'),
+    )
+    def __str__(self):
+        return f"{self.ip_cidr}"
 
 class PhoneNumber(Base):
     __tablename__ = 'phone_numbers'
@@ -107,6 +132,13 @@ class PhoneNumber(Base):
     operator = relationship("Operator")
     sessions = relationship("Session", back_populates="phone_number", cascade="all, delete-orphan")
     def __str__(self): return self.number_str
+
+    __table_args__ = (
+        Index('ix_phone_numbers_number_str_gin', 'number_str', postgresql_using='gin', postgresql_ops={'number_str': 'gin_trgm_ops'}),
+        Index('idx_pn_free_c_p_id', 'country_id', 'provider_id', 'id', postgresql_where=sa.text('is_active IS TRUE AND is_in_use IS FALSE')),
+        Index('idx_pn_free_c_op_p_id', 'country_id', 'operator_id', 'provider_id', 'id', postgresql_where=sa.text('is_active IS TRUE AND is_in_use IS FALSE')),
+        Index('idx_pn_number_str_prefix', 'number_str', postgresql_ops={'number_str': 'text_pattern_ops'}),
+    )
 
 class PhoneNumberUsage(Base):
     __tablename__ = 'phone_number_usage'
@@ -130,7 +162,11 @@ class Session(Base):
     phone_number = relationship("PhoneNumber", back_populates="sessions")
     api_key = relationship("ApiKey", back_populates="sessions")
     sms_messages = relationship("SmsMessage", back_populates="session", cascade="all, delete-orphan")
-    __table_args__ = (Index('ix_session_cleanup', 'status', 'created_at'),)
+    __table_args__ = (
+        Index('ix_session_cleanup', 'status', 'created_at'),
+        Index('idx_sessions_phone_number_id', 'phone_number_id'),
+        Index('idx_sessions_service_id', 'service_id'),
+    )
 
 class SmsMessage(Base):
     __tablename__ = 'sms_messages'
@@ -141,14 +177,11 @@ class SmsMessage(Base):
     code = Column(String(20), nullable=True, index=True)
     received_at = Column(DateTime(timezone=True), server_default=func.now(), index=True)
     session = relationship("Session", back_populates="sms_messages")
-
     def __str__(self) -> str:
         return f'{self.text[:50]}...' if len(self.text) > 50 else self.text
-
     @hybrid_property
     def phone_number(self) -> str | None:
         return self.session.phone_number_str if self.session else None
-
     @phone_number.expression
     def phone_number(cls):
         return (
@@ -156,6 +189,10 @@ class SmsMessage(Base):
             .where(Session.id == cls.session_id)
             .scalar_subquery()
         )
+    __table_args__ = (
+        Index('idx_sms_session_received', 'session_id', 'received_at'),
+        Index('idx_sms_received', 'received_at'),
+    )
 
 class ApiKey(Base):
     __tablename__ = 'api_keys'
@@ -191,3 +228,10 @@ class OrphanSms(Base):
     def __str__(self):
         preview = self.text[:50] + ('...' if len(self.text) > 50 else '')
         return f"{self.source_addr} → {self.phone_number_str}: {preview}"
+    __table_args__ = (
+        Index('idx_orphan_received', 'received_at'),
+        Index('idx_orphan_filters', 'provider_id', 'country_id', 'operator_id', 'received_at'),
+        Index('idx_orphan_sender', 'source_addr'),
+        Index('idx_orphan_phone', 'phone_number_str'),
+    )
+

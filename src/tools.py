@@ -6,20 +6,48 @@ import string
 import io
 import csv
 import logging
+import time
 from datetime import timedelta
-from typing import Optional, List
+from typing import Optional, List, Dict, Any
+from functools import lru_cache
 
 from fastapi import Request, UploadFile, Depends, Form, APIRouter, BackgroundTasks
 from starlette.responses import RedirectResponse, StreamingResponse
+from starlette.responses import JSONResponse
 from starlette.templating import Jinja2Templates
 
-from sqlalchemy import func, text, bindparam, Integer, String
-from sqlalchemy.orm import Session
+from sqlalchemy import func, text
+from sqlalchemy.orm import Session, selectinload
 
 from .database import SessionLocal
 from . import models
 from .utils import normalize_phone_number
-from . import main as main_app  # для вызова фоновой очистки
+from . import main as main_app
+
+# --- Redis JSON cache helpers (используем redis_client из main) ---
+import json
+try:
+    from src.main import redis_client
+except Exception:
+    redis_client = None
+
+def _cache_get_json(key: str):
+    if not redis_client:
+        return None
+    try:
+        v = redis_client.get(key)
+        return json.loads(v) if v else None
+    except Exception:
+        return None
+
+def _cache_set_json(key: str, data, ttl: int):
+    if not redis_client:
+        return
+    try:
+        redis_client.setex(key, ttl, json.dumps(data, default=str))
+    except Exception:
+        pass
+
 
 log = logging.getLogger(__name__)
 
@@ -34,10 +62,56 @@ def get_db():
     finally:
         db.close()
 
+# вспомогательный генератор случайного порядка (для NOT NULL sort_order)
+def _make_sort_order() -> int:
+    return random.randint(1, 2_147_483_646)
+
+# --- LRU Cache справочников ---
+@lru_cache(maxsize=1)
+def get_cached_providers() -> List[models.Provider]:
+    db = SessionLocal()
+    try:
+        return db.query(models.Provider).order_by(models.Provider.name).all()
+    finally:
+        db.close()
+
+@lru_cache(maxsize=1)
+def get_cached_countries() -> List[models.Country]:
+    db = SessionLocal()
+    try:
+        return db.query(models.Country).order_by(models.Country.name).all()
+    finally:
+        db.close()
+
+@lru_cache(maxsize=1)
+def get_cached_operators() -> List[models.Operator]:
+    # нужно, чтобы в шаблоне безопасно дергать op.country.name/op.provider.name
+    db = SessionLocal()
+    try:
+        return (
+            db.query(models.Operator)
+              .options(
+                  selectinload(models.Operator.country),
+                  selectinload(models.Operator.provider),
+              )
+              .order_by(models.Operator.name)
+              .all()
+        )
+    finally:
+        db.close()
+
+@lru_cache(maxsize=1)
+def get_cached_services() -> List[models.Service]:
+    db = SessionLocal()
+    try:
+        return db.query(models.Service).order_by(models.Service.name).all()
+    finally:
+        db.close()
 
 # --------------------------
-# Главная страница инструментов
+# Главная страница инструментов (оптимизировано)
 # --------------------------
+# Поместите этот код вместо существующей функции get_tools_page в src/tools.py
 @router.get("/tools", tags=["Tools"], summary="Страница со всеми инструментами")
 def get_tools_page(
     request: Request,
@@ -46,359 +120,465 @@ def get_tools_page(
     end_date_str: Optional[str] = None,
     api_key_str: Optional[str] = None
 ):
-    # --- Даты периода (UTC) ---
-    try:
-        if start_date_str:
-            start_date = datetime.datetime.strptime(start_date_str, "%Y-%m-%d").replace(
-                hour=0, minute=0, second=0, microsecond=0, tzinfo=datetime.timezone.utc
-            )
-        else:
-            start_date = (datetime.datetime.now(datetime.timezone.utc) - timedelta(days=6)).replace(
-                hour=0, minute=0, second=0, microsecond=0
-            )
+    t_start = time.time()
 
-        if end_date_str:
-            end_date = datetime.datetime.strptime(end_date_str, "%Y-%m-%d").replace(
-                hour=23, minute=59, second=59, microsecond=0, tzinfo=datetime.timezone.utc
-            )
-        else:
-            end_date = datetime.datetime.now(datetime.timezone.utc)
+    # --- Период (UTC) ---
+    try:
+        start_date = datetime.datetime.strptime(start_date_str, "%Y-%m-%d").replace(tzinfo=datetime.timezone.utc) if start_date_str else \
+            (datetime.datetime.now(datetime.timezone.utc) - timedelta(days=6)).replace(hour=0, minute=0, second=0, microsecond=0)
+        end_date = datetime.datetime.strptime(end_date_str, "%Y-%m-%d").replace(hour=23, minute=59, second=59, microsecond=999999, tzinfo=datetime.timezone.utc) if end_date_str else \
+            datetime.datetime.now(datetime.timezone.utc)
     except (ValueError, TypeError):
-        start_date = (datetime.datetime.now(datetime.timezone.utc) - timedelta(days=6)).replace(
-            hour=0, minute=0, second=0, microsecond=0
-        )
+        start_date = (datetime.datetime.now(datetime.timezone.utc) - timedelta(days=6)).replace(hour=0, minute=0, second=0, microsecond=0)
         end_date = datetime.datetime.now(datetime.timezone.utc)
 
-    # --- Справочники ---
-    providers = db.query(models.Provider).order_by(models.Provider.name).all()
-    countries = db.query(models.Country).order_by(models.Country.name).all()
-    operators = db.query(models.Operator).order_by(models.Operator.name).all()
-    all_services = db.query(models.Service).order_by(models.Service.name).all()
+    # --- Справочники (из LRU-кэша) ---
+    providers = get_cached_providers()
+    countries = get_cached_countries()
+    operators = get_cached_operators()
+    all_services = get_cached_services()
+
+    # Мапы id->name для быстрого отображения без JOIN-ов
+    prov_map = {p.id: p.name for p in providers}
+    country_map = {c.id: c.name for c in countries}
+    oper_map = {o.id: o.name for o in operators}
 
     # --- Query-параметры ---
     q = request.query_params
     stat_group_by = (q.get("stat_group_by") or "service").strip()
-
-    # ФИЛЬТРЫ ДЛЯ ДАШБОРДА
     stat_provider_id = int(q.get("stat_provider_id")) if (q.get("stat_provider_id") or "").isdigit() else None
     stat_country_id  = int(q.get("stat_country_id"))  if (q.get("stat_country_id")  or "").isdigit() else None
     stat_service_id  = int(q.get("stat_service_id"))  if (q.get("stat_service_id")  or "").isdigit() else None
 
-    # ФИЛЬТРЫ «осиротевших»
     ot_search_sender = (q.get("ot_search_sender") or "").strip()
     ot_provider_id = int(q.get("ot_provider_id")) if (q.get("ot_provider_id") or "").isdigit() else None
     ot_country_id  = int(q.get("ot_country_id"))  if (q.get("ot_country_id")  or "").isdigit() else None
-    ot_page = int(q.get("ot_page") or 1)
-    if ot_page < 1: ot_page = 1
-    per_page = 20  # как в шаблоне
+    ot_operator_id = int(q.get("ot_operator_id")) if (q.get("ot_operator_id") or "").isdigit() else None
+    ot_page = max(1, int(q.get("ot_page") or 1))
+    per_page = 20
 
-    # Помощник: применяет фильтры дашборда
-    def apply_stat_filters(qry, join_session=True, join_phone=False):
-        if join_session:
-            qry = qry.join(models.Session, models.SmsMessage.session_id == models.Session.id)
-        if join_phone or stat_provider_id or stat_country_id:
-            qry = qry.join(models.PhoneNumber, models.PhoneNumber.id == models.Session.phone_number_id)
-        if stat_service_id:
-            qry = qry.filter(models.Session.service_id == stat_service_id)
-        if stat_provider_id:
-            qry = qry.filter(models.PhoneNumber.provider_id == stat_provider_id)
-        if stat_country_id:
-            qry = qry.filter(models.PhoneNumber.country_id == stat_country_id)
-        return qry
+    # --- Фильтры для статистики ---
+    stat_params = {"start_date": start_date, "end_date": end_date}
+    stat_filters_sql = []
+    need_join_pn = False
 
-    # --- Сводные метрики (с учётом фильтров) ---
-    total_sms = apply_stat_filters(
-        db.query(models.SmsMessage).select_from(models.SmsMessage),   # ВАЖНО: select_from СНАЧАЛА
-        join_session=True, join_phone=True
-    ).filter(
-        models.SmsMessage.received_at.between(start_date, end_date)
-    ).count()
+    if stat_service_id:
+        stat_filters_sql.append("s.service_id = :stat_service_id")
+        stat_params["stat_service_id"] = stat_service_id
+    if stat_provider_id:
+        stat_filters_sql.append("pn.provider_id = :stat_provider_id")
+        stat_params["stat_provider_id"] = stat_provider_id
+        need_join_pn = True
+    if stat_country_id:
+        stat_filters_sql.append("pn.country_id = :stat_country_id")
+        stat_params["stat_country_id"] = stat_country_id
+        need_join_pn = True
 
-    unique_numbers = apply_stat_filters(
-        db.query(func.count(func.distinct(models.Session.phone_number_id))).select_from(models.SmsMessage),
-        join_session=True, join_phone=True
-    ).filter(
-        models.SmsMessage.received_at.between(start_date, end_date)
-    ).scalar() or 0
+    where_clause = (" AND " + " AND ".join(stat_filters_sql)) if stat_filters_sql else ""
+    join_pn_sql = "JOIN phone_numbers pn ON s.phone_number_id = pn.id" if need_join_pn or stat_group_by in ("provider", "country") else ""
 
-    unique_services = apply_stat_filters(
-        db.query(func.count(func.distinct(models.Session.service_id))).select_from(models.SmsMessage),
-        join_session=True, join_phone=True
-    ).filter(
-        models.SmsMessage.received_at.between(start_date, end_date)
-    ).scalar() or 0
+    # --- ИТОГИ (кэш 300с) ---
+    sum_key = f"tools:sum:{start_date.isoformat()}:{end_date.isoformat()}:{stat_service_id}:{stat_provider_id}:{stat_country_id}"
+    totals = _cache_get_json(sum_key)
+    if totals is None:
+        summary_sql = text(f"""
+            SELECT
+                COUNT(m.id) AS total_sms,
+                COUNT(DISTINCT s.phone_number_id) AS unique_numbers,
+                COUNT(DISTINCT s.service_id) AS unique_services
+            FROM sms_messages m
+            JOIN sessions s ON m.session_id = s.id
+            {join_pn_sql}
+            WHERE m.received_at BETWEEN :start_date AND :end_date {where_clause}
+        """)
+        row = db.execute(summary_sql, stat_params).fetchone()
+        totals = {
+            "total_sms": int(row.total_sms or 0),
+            "unique_numbers": int(row.unique_numbers or 0),
+            "unique_services": int(row.unique_services or 0),
+        }
+        _cache_set_json(sum_key, totals, ttl=300)
 
+    total_sms = totals["total_sms"]
+    unique_numbers = totals["unique_numbers"]
+    unique_services = totals["unique_services"]
     avg_sms_per_number = round((total_sms / unique_numbers), 2) if unique_numbers else 0.0
 
-    numbers_in_use_now = db.query(models.PhoneNumber).filter(models.PhoneNumber.is_in_use.is_(True)).count()
-    numbers_free_now = db.query(models.PhoneNumber).filter(
-        models.PhoneNumber.is_in_use.is_(False), models.PhoneNumber.is_active.is_(True)
-    ).count()
+    # --- Счетчики заняты/свободны (кэш 300с) ---
+    pn_key = "tools:pn_counts"
+    pn_counts = _cache_get_json(pn_key)
+    if pn_counts is None:
+        row = db.execute(text("""
+            SELECT
+               (SELECT COUNT(id) FROM phone_numbers WHERE is_in_use IS TRUE) AS busy_cnt,
+               (SELECT COUNT(id) FROM phone_numbers WHERE is_in_use IS FALSE AND is_active IS TRUE) AS free_active_cnt
+        """)).first()
+        pn_counts = {"busy": int(row.busy_cnt), "free_active": int(row.free_active_cnt)}
+        _cache_set_json(pn_key, pn_counts, ttl=300)
+    numbers_in_use_now = pn_counts["busy"]
+    numbers_free_now = pn_counts["free_active"]
 
-    # --- Таймсерия для графика (с учётом фильтров) ---
-    counts_by_day = dict(
-        apply_stat_filters(
-            db.query(func.date(models.SmsMessage.received_at), func.count(models.SmsMessage.id))
-              .select_from(models.SmsMessage),
-            join_session=True, join_phone=True
-        )
-        .filter(models.SmsMessage.received_at.between(start_date, end_date))
-        .group_by(func.date(models.SmsMessage.received_at))
-        .all()
-    )
+    # --- Таймсерия по дням (кэш 300с) ---
+    byday_key = f"tools:byday:{start_date.date()}:{end_date.date()}:{stat_service_id}:{stat_provider_id}:{stat_country_id}"
+    byday = _cache_get_json(byday_key)
+    if byday is None:
+        chart_sql = text(f"""
+            SELECT date_trunc('day', m.received_at)::date AS day, COUNT(m.id) AS sms_count
+            FROM sms_messages m
+            JOIN sessions s ON m.session_id = s.id
+            {join_pn_sql}
+            WHERE m.received_at BETWEEN :start_date AND :end_date {where_clause}
+            GROUP BY 1
+            ORDER BY 1
+        """)
+        rows = db.execute(chart_sql, stat_params).fetchall()
+        byday = {r.day.isoformat(): int(r.sms_count) for r in rows}
+        _cache_set_json(byday_key, byday, ttl=300)
+
     day_labels, day_values = [], []
-    cur = start_date
-    while cur.date() <= end_date.date():
-        dstr = cur.strftime("%Y-%m-%d")
-        day_labels.append(dstr)
-        day_values.append(int(counts_by_day.get(dstr, 0) or counts_by_day.get(cur.date(), 0) or 0))
+    cur = start_date.date()
+    while cur <= end_date.date():
+        k = cur.isoformat()
+        day_labels.append(k)
+        day_values.append(byday.get(k, 0))
         cur += timedelta(days=1)
     chart_data = {"labels": day_labels, "data": day_values}
 
-    # --- Правая детализация (по вкладке) + фильтры ---
-    if stat_group_by == "service":
-        details_table = apply_stat_filters(
-            db.query(
-                models.Service.name.label("name"),
-                func.count(models.SmsMessage.id).label("sms_count"),
-                func.count(func.distinct(models.Session.phone_number_id)).label("unique_numbers"),
-            )
-            .select_from(models.SmsMessage)
-            .join(models.Session)
-            .join(models.Service),
-            join_session=False, join_phone=True
-        ).filter(
-            models.SmsMessage.received_at.between(start_date, end_date)
-        ).group_by(
-            models.Service.name
-        ).order_by(
-            func.count(models.SmsMessage.id).desc()
-        ).limit(200).all()
+    # --- Детализация (group by) (кэш 300с) ---
+    gb = (stat_group_by or "service").lower()
+    group_by_map = {
+        "provider": ("p.name", "pn.provider_id", "providers p", "p.id = pn.provider_id"),
+        "country":  ("c.name", "pn.country_id",  "countries c", "c.id = pn.country_id"),
+        "date":     ("(m.received_at::date)::text", "m.received_at::date", None, None),
+        "service":  ("svc.name", "s.service_id", "services svc", "svc.id = s.service_id"),
+    }
+    gb_name, gb_col, gb_join_table, gb_join_on = group_by_map.get(gb, group_by_map["service"])
+    join_sql = f"JOIN {gb_join_table} ON {gb_join_on}" if gb_join_table else ""
 
-    elif stat_group_by == "provider":
-        details_table = apply_stat_filters(
-            db.query(
-                models.Provider.name.label("name"),
-                func.count(models.SmsMessage.id).label("sms_count"),
-                func.count(func.distinct(models.Session.phone_number_id)).label("unique_numbers"),
-            )
-            .select_from(models.SmsMessage)
-            .join(models.Session)
-            .join(models.PhoneNumber)
-            .join(models.Provider),
-            join_session=False, join_phone=False
-        ).filter(
-            models.SmsMessage.received_at.between(start_date, end_date)
-        ).group_by(
-            models.Provider.name
-        ).order_by(
-            func.count(models.SmsMessage.id).desc()
-        ).limit(200).all()
+    details_key = f"tools:details:{gb}:{start_date.isoformat()}:{end_date.isoformat()}:{stat_service_id}:{stat_provider_id}:{stat_country_id}"
+    details_table = _cache_get_json(details_key)
+    if details_table is None:
+        details_sql = text(f"""
+            SELECT {gb_name} AS name,
+                   COUNT(m.id) AS sms_count,
+                   COUNT(DISTINCT s.phone_number_id) AS unique_numbers
+            FROM sms_messages m
+            JOIN sessions s ON m.session_id = s.id
+            {'JOIN phone_numbers pn ON s.phone_number_id = pn.id' if (need_join_pn or gb in ("provider","country")) else ""}
+            {join_sql}
+            WHERE m.received_at BETWEEN :start_date AND :end_date {where_clause}
+            GROUP BY {gb_name}
+            ORDER BY sms_count DESC
+            LIMIT 100
+        """)
+        rows = db.execute(details_sql, stat_params).fetchall()
+        details_table = [{"name": r.name, "sms_count": int(r.sms_count), "unique_numbers": int(r.unique_numbers)} for r in rows]
+        _cache_set_json(details_key, details_table, ttl=300)
 
-    elif stat_group_by == "country":
-        details_table = apply_stat_filters(
-            db.query(
-                models.Country.name.label("name"),
-                func.count(models.SmsMessage.id).label("sms_count"),
-                func.count(func.distinct(models.Session.phone_number_id)).label("unique_numbers"),
-            )
-            .select_from(models.SmsMessage)
-            .join(models.Session)
-            .join(models.PhoneNumber)
-            .join(models.Country),
-            join_session=False, join_phone=False
-        ).filter(
-            models.SmsMessage.received_at.between(start_date, end_date)
-        ).group_by(
-            models.Country.name
-        ).order_by(
-            func.count(models.SmsMessage.id).desc()
-        ).limit(200).all()
-
-    else:  # date
-        details_table = apply_stat_filters(
-            db.query(
-                func.date(models.SmsMessage.received_at).label("name"),
-                func.count(models.SmsMessage.id).label("sms_count"),
-                func.count(func.distinct(models.Session.phone_number_id)).label("unique_numbers"),
-            )
-            .select_from(models.SmsMessage),
-            join_session=True, join_phone=True
-        ).filter(
-            models.SmsMessage.received_at.between(start_date, end_date)
-        ).group_by(
-            func.date(models.SmsMessage.received_at)
-        ).order_by(
-            func.date(models.SmsMessage.received_at)
-        ).all()
-
-    # --- «Осиротевший» трафик (как раньше) + пагинация ---
-    prov_id_expr = func.coalesce(models.OrphanSms.provider_id, models.PhoneNumber.provider_id)
-    country_id_expr = func.coalesce(models.OrphanSms.country_id, models.PhoneNumber.country_id)
-    oper_id_expr = func.coalesce(models.OrphanSms.operator_id, models.PhoneNumber.operator_id)
-
-    prov_name_expr = func.coalesce(models.Provider.name, "—").label("provider_name")
-    country_name_expr = func.coalesce(models.Country.name, "—").label("country_name")
-    oper_name_expr = func.coalesce(models.Operator.name, "—").label("operator_name")
-
-    base_q = (
-        db.query(
-            prov_name_expr,
-            models.OrphanSms.source_addr.label("source_addr"),
-            country_name_expr,
-            oper_name_expr,
-            func.min(models.OrphanSms.text).label("sample_text"),
-            func.count(models.OrphanSms.id).label("sms_count"),
-            func.count(func.distinct(models.OrphanSms.phone_number_str)).label("unique_numbers_count"),
-            prov_id_expr.label("provider_id"),
-            country_id_expr.label("country_id"),
-            oper_id_expr.label("operator_id"),
-        )
-        .select_from(models.OrphanSms)
-        .outerjoin(models.PhoneNumber, models.PhoneNumber.number_str == models.OrphanSms.phone_number_str)
-        .outerjoin(models.Provider, models.Provider.id == prov_id_expr)
-        .outerjoin(models.Country, models.Country.id == country_id_expr)
-        .outerjoin(models.Operator, models.Operator.id == oper_id_expr)
-        .filter(models.OrphanSms.received_at.between(start_date, end_date))
-    )
+    # --------------------------
+    # «Осиротевший» трафик — ДВУХФАЗНЫЙ top-N
+    # --------------------------
+    # Фильтры
+    ot_params: Dict[str, Any] = {"start_date": start_date, "end_date": end_date}
+    where_parts = ["o.received_at BETWEEN :start_date AND :end_date"]
     if ot_search_sender:
-        base_q = base_q.filter(models.OrphanSms.source_addr.ilike(f"%{ot_search_sender}%"))
-    if ot_provider_id:
-        base_q = base_q.filter(prov_id_expr == ot_provider_id)
-    if ot_country_id:
-        base_q = base_q.filter(country_id_expr == ot_country_id)
+        where_parts.append("o.source_addr ILIKE :sender")
+        ot_params["sender"] = f"%{ot_search_sender}%"
+    if ot_provider_id is not None:
+        where_parts.append("o.provider_id = :ot_provider_id")
+        ot_params["ot_provider_id"] = ot_provider_id
+    if ot_country_id is not None:
+        where_parts.append("o.country_id = :ot_country_id")
+        ot_params["ot_country_id"] = ot_country_id
+    if ot_operator_id is not None:
+        where_parts.append("o.operator_id = :ot_operator_id")
+        ot_params["ot_operator_id"] = ot_operator_id
+    ot_where_clause = " AND ".join(where_parts)
 
-    base_q = base_q.group_by(
-        prov_name_expr, models.OrphanSms.source_addr, country_name_expr, oper_name_expr,
-        prov_id_expr, country_id_expr, oper_id_expr
-    ).order_by(func.count(models.OrphanSms.id).desc())
+    # COUNT(*) групп (делаем только на 1-й странице; кэш 300с)
+    total_rows: int
+    total_pages: int
+    count_key = f"tools:orph:cnt:{start_date.date()}:{end_date.date()}:{ot_provider_id}:{ot_country_id}:{ot_operator_id}:{ot_search_sender}"
+    if ot_page == 1:
+        total_rows = _cache_get_json(count_key)
+        if total_rows is None:
+            count_sql = text(f"""
+                SELECT COUNT(*) FROM (
+                  SELECT 1
+                  FROM orphan_sms o
+                  WHERE {ot_where_clause}
+                  GROUP BY o.provider_id, o.country_id, o.operator_id, o.source_addr
+                ) t
+            """)
+            total_rows = int(db.execute(count_sql, ot_params).scalar() or 0)
+            _cache_set_json(count_key, total_rows, ttl=300)
+        total_pages = max(1, (total_rows + per_page - 1) // per_page)
+    else:
+        total_rows = -1
+        total_pages = ot_page
 
-    all_groups = base_q.all()
-    total_rows = len(all_groups)
-    total_pages = max(1, (total_rows + per_page - 1) // per_page)
-    if ot_page > total_pages: ot_page = total_pages
-    start_idx = (ot_page - 1) * per_page
-    end_idx = start_idx + per_page
-    orphan_traffic_data = all_groups[start_idx:end_idx]
+    # Фаза 1: только топ-группы по COUNT(*)
+    phase1_limit = per_page + (1 if ot_page > 1 else 0)
+    phase1_offset = (ot_page - 1) * per_page
 
-    ot_pagination = {"current_page": ot_page, "total_pages": total_pages, "total_rows": total_rows}
+    orph_phase1_key = f"tools:orph:phase1:{start_date.date()}:{end_date.date()}:{ot_provider_id}:{ot_country_id}:{ot_operator_id}:{ot_search_sender}:{ot_page}:{per_page}"
+    phase1_rows = _cache_get_json(orph_phase1_key)
+    has_next = None
+    if phase1_rows is None:
+        try:
+            db.execute(text("SET LOCAL work_mem = '256MB'"))
+        except Exception:
+            pass
 
-    # --- Объекты для шаблона ---
-    dashboard_stats = {
-        "total_sms": total_sms,
-        "unique_numbers": unique_numbers,
-        "unique_services": unique_services,
-        "avg_sms_per_number": avg_sms_per_number,
-        "numbers_in_use": numbers_in_use_now,
-        "numbers_free": numbers_free_now,
-        "period_start": start_date.strftime("%Y-%m-%d"),
-        "period_end": end_date.strftime("%Y-%m-%d"),
-    }
-    stat_filters = {
-        "group_by": stat_group_by,
-        "start_date": start_date.strftime("%Y-%m-%d"),
-        "end_date": end_date.strftime("%Y-%m-%d"),
-        "provider_id": stat_provider_id,
-        "country_id": stat_country_id,
-        "service_id": stat_service_id,
-        "api_key": api_key_str or None,
-    }
-    ot_filters = {
-        "search_sender": ot_search_sender,
-        "provider_id": ot_provider_id,
-        "country_id": ot_country_id,
-        "operator_id": None,
-        "start_date": start_date.strftime("%Y-%m-%d"),
-        "end_date": end_date.strftime("%Y-%m-%d"),
-    }
+        phase1_sql = text(f"""
+            SELECT
+              o.provider_id  AS provider_id,
+              o.source_addr  AS source_addr,
+              o.country_id   AS country_id,
+              o.operator_id  AS operator_id,
+              COUNT(*)       AS sms_count
+            FROM orphan_sms o
+            WHERE {ot_where_clause}
+            GROUP BY 1,2,3,4
+            ORDER BY sms_count DESC
+            LIMIT :limit OFFSET :offset
+        """)
+        phase1_rows_raw = db.execute(phase1_sql, {**ot_params, "limit": phase1_limit, "offset": phase1_offset}).fetchall()
+        has_next = (ot_page > 1 and len(phase1_rows_raw) == phase1_limit)
+        phase1_rows = [{
+            "provider_id": r.provider_id,
+            "country_id": r.country_id,
+            "operator_id": r.operator_id,
+            "source_addr": r.source_addr,
+            "sms_count": int(r.sms_count),
+        } for r in (phase1_rows_raw[:per_page] if ot_page > 1 else phase1_rows_raw)]
+        _cache_set_json(orph_phase1_key, phase1_rows, ttl=300)
 
+    else:
+        has_next = None
+
+    # Фаза 2: для выбранных групп — через CTE VALUES + JOIN (быстрее, чем длинный OR)
+    if phase1_rows:
+        # Конструируем VALUES (:p0,:c0,:o0,:s0), ...
+        vals_parts = []
+        params2: Dict[str, Any] = {"start_date": start_date, "end_date": end_date}
+        base_parts = ["o.received_at BETWEEN :start_date AND :end_date"]
+        if ot_search_sender:
+            base_parts.append("o.source_addr ILIKE :sender")
+            params2["sender"] = f"%{ot_search_sender}%"
+        if ot_provider_id is not None:
+            base_parts.append("o.provider_id = :ot_provider_id")
+            params2["ot_provider_id"] = ot_provider_id
+        if ot_country_id is not None:
+            base_parts.append("o.country_id = :ot_country_id")
+            params2["ot_country_id"] = ot_country_id
+        if ot_operator_id is not None:
+            base_parts.append("o.operator_id = :ot_operator_id")
+            params2["ot_operator_id"] = ot_operator_id
+
+        for i, g in enumerate(phase1_rows):
+            params2[f"p{i}"] = g["provider_id"]
+            params2[f"c{i}"] = g["country_id"]
+            params2[f"o{i}"] = g["operator_id"]
+            params2[f"s{i}"] = g["source_addr"]
+            vals_parts.append(f"(:p{i}, :c{i}, :o{i}, :s{i})")
+
+        keys_values_sql = ", ".join(vals_parts)
+        base_where_sql = " AND ".join(base_parts)
+
+        # DISTINCT считаем по join-результату (индексы отрабатывают лучше)
+        phase2_sql = text(f"""
+            WITH keys(provider_id, country_id, operator_id, source_addr) AS (
+                VALUES {keys_values_sql}
+            )
+            SELECT
+              k.provider_id,
+              k.source_addr,
+              k.country_id,
+              k.operator_id,
+              COUNT(DISTINCT o.phone_number_str) AS unique_numbers_count,
+              MIN(o.text) AS sample_text
+            FROM keys k
+            JOIN orphan_sms o
+              ON o.provider_id  IS NOT DISTINCT FROM k.provider_id
+             AND o.country_id   IS NOT DISTINCT FROM k.country_id
+             AND o.operator_id  IS NOT DISTINCT FROM k.operator_id::integer -- <<< ИСПРАВЛЕНИЕ ЗДЕСЬ
+             AND o.source_addr  =  k.source_addr
+            WHERE {base_where_sql}
+            GROUP BY 1,2,3,4
+        """)
+        try:
+            db.execute(text("SET LOCAL work_mem = '256MB'"))
+        except Exception:
+            pass
+
+        phase2_rows = db.execute(phase2_sql, params2).fetchall()
+
+        det_map: Dict[tuple, Dict[str, Any]] = {}
+        for r in phase2_rows:
+            det_map[(r.provider_id, r.country_id, r.operator_id, r.source_addr)] = {
+                "unique_numbers_count": int(r.unique_numbers_count),
+                "sample_text": r.sample_text,
+            }
+
+        orphan_rows = []
+        for g in phase1_rows:
+            key = (g["provider_id"], g["country_id"], g["operator_id"], g["source_addr"])
+            extra = det_map.get(key, {"unique_numbers_count": 0, "sample_text": None})
+            orphan_rows.append({
+                "provider_id": g["provider_id"],
+                "provider_name": prov_map.get(g["provider_id"], "—"),
+                "source_addr": g["source_addr"],
+                "country_id": g["country_id"],
+                "country_name": country_map.get(g["country_id"], "—"),
+                "operator_id": g["operator_id"],
+                "operator_name": oper_map.get(g["operator_id"], "—"),
+                "sms_count": g["sms_count"],
+                "unique_numbers_count": extra["unique_numbers_count"],
+                "sample_text": extra["sample_text"],
+            })
+    else:
+        orphan_rows = []
+
+    # Пагинация для страниц >1 без COUNT
+    if ot_page == 1:
+        ot_pagination = {"current_page": ot_page, "total_pages": total_pages, "total_rows": total_rows}
+    else:
+        if has_next is None:
+            has_next = len(phase1_rows) == per_page
+        inferred_total_pages = ot_page + 1 if has_next else ot_page
+        ot_pagination = {"current_page": ot_page, "total_pages": inferred_total_pages, "total_rows": -1}
+
+    # --- API статистика по ключу (кэш 300с) ---
+    api_stats_obj, error_api_stats, selected_key = None, None, None
+    if api_key_str:
+        selected_key = db.query(models.ApiKey).filter(models.ApiKey.key == api_key_str.strip()).first()
+        if not selected_key:
+            error_api_stats = "API ключ не найден."
+        else:
+            api_cache_key = f"tools:api:{selected_key.id}:{start_date.date()}:{end_date.date()}"
+            api_cached = _cache_get_json(api_cache_key)
+            if api_cached is None:
+                rows = db.execute(text("""
+                    SELECT svc.name, COUNT(m.id) AS sms_count
+                    FROM sms_messages m
+                    JOIN sessions s ON m.session_id = s.id
+                    JOIN services svc ON s.service_id = svc.id
+                    WHERE s.api_key_id = :api_key_id AND m.received_at BETWEEN :start_date AND :end_date
+                    GROUP BY svc.name
+                    ORDER BY sms_count DESC
+                """), {"api_key_id": selected_key.id, "start_date": start_date, "end_date": end_date}).fetchall()
+                total_api_sms = int(sum(r.sms_count for r in rows))
+                api_cached = {"total_sms": total_api_sms,
+                              "service_breakdown": [{"name": r.name, "sms_count": int(r.sms_count)} for r in rows]}
+                _cache_set_json(api_cache_key, api_cached, ttl=300)
+            api_stats_obj = api_cached
+
+    # --- Контекст ---
     context = {
         "request": request,
-        "dashboard_stats": dashboard_stats,
-        "stat_filters": stat_filters,
-        "ot_filters": ot_filters,
+        "dashboard_stats": {
+            "total_sms": total_sms, "unique_numbers": unique_numbers, "unique_services": unique_services,
+            "avg_sms_per_number": avg_sms_per_number, "numbers_in_use": numbers_in_use_now, "numbers_free": numbers_free_now,
+        },
+        "stat_filters": {
+            "group_by": stat_group_by, "provider_id": stat_provider_id, "country_id": stat_country_id, "service_id": stat_service_id,
+        },
+        "ot_filters": {
+            "search_sender": ot_search_sender, "provider_id": ot_provider_id, "country_id": ot_country_id, "operator_id": ot_operator_id,
+        },
         "ot_pagination": ot_pagination,
-
-        "providers": providers,
-        "countries": countries,
-        "operators": operators,
-        "all_services": all_services,
-
+        "providers": providers, "countries": countries, "operators": operators, "all_services": all_services,
         "chart_data": chart_data,
         "details_table": details_table,
-        "chart_provider_data": {"labels": [], "data": []},
-
-        "orphan_traffic_data": orphan_traffic_data,
+        "orphan_traffic_data": orphan_rows,
         "start_date_str": start_date.strftime("%Y-%m-%d"),
         "end_date_str": end_date.strftime("%Y-%m-%d"),
+        "api_stats": api_stats_obj,
+        "error_api_stats": error_api_stats,
+        "selected_key": selected_key,
         "selected_key_str": api_key_str,
     }
+    log.info(f"Страница /tools сгенерирована за {time.time() - t_start:.2f} сек.")
     return templates.TemplateResponse("tools.html", context)
 
-
 # --------------------------
-# Детализация «осиротевших» по списку номеров
+# Детализация «осиротевших» по списку номеров (с датами/временем) — FIX
 # --------------------------
 @router.get("/tools/orphan-numbers-detail", tags=["Tools"])
 def get_orphan_numbers_detail(
     request: Request,
     source_addr: str,
-    provider_id: Optional[str] = None,   # ← принимаем как str (может прийти "")
-    country_id: Optional[str] = None,    # ←
-    operator_id: Optional[str] = None,   # ←
+    provider_id: Optional[str] = None,
+    country_id: Optional[str] = None,
+    operator_id: Optional[str] = None,
+    start_date_str: Optional[str] = None,
+    end_date_str: Optional[str] = None,
     db: Session = Depends(get_db),
     format: Optional[str] = None,
 ):
-    # безопасно конвертируем в int либо None
+    # --- разбор периода (UTC) ---
+    def _parse_dt(s: Optional[str], is_start: bool) -> Optional[datetime.datetime]:
+        if not s:
+            return None
+        try:
+            dt = datetime.datetime.fromisoformat(s.replace("Z", "+00:00"))
+            return dt.astimezone(datetime.timezone.utc)
+        except ValueError:
+            try:
+                dt = datetime.datetime.strptime(s, "%Y-%m-%d")
+                return dt.replace(
+                    hour=0 if is_start else 23,
+                    minute=0 if is_start else 59,
+                    second=0 if is_start else 59,
+                    microsecond=0,
+                    tzinfo=datetime.timezone.utc,
+                )
+            except ValueError:
+                return None
+
+    now = datetime.datetime.now(datetime.timezone.utc)
+    start_dt = _parse_dt(start_date_str, True) or now.replace(hour=0, minute=0, second=0, microsecond=0)
+    end_dt = _parse_dt(end_date_str, False) or now
+
     pid = int(provider_id) if provider_id and provider_id.isdigit() else None
     cid = int(country_id)  if country_id  and country_id.isdigit()  else None
     oid = int(operator_id) if operator_id and operator_id.isdigit() else None
 
-    # Фильтрация по COALESCE(o.*, pn.*) — учитываем обе стороны сопоставления
-    sql_numbers = text(
-        """
+    # --- ДИНАМИЧЕСКОЕ построение WHERE (не передаём NULL в "=") ---
+    where_parts = [
+        "o.source_addr = :source_addr",
+        "o.received_at BETWEEN :start_dt AND :end_dt",
+    ]
+    params = {
+        "source_addr": source_addr,
+        "start_dt": start_dt,
+        "end_dt": end_dt,
+    }
+    if pid is not None:
+        where_parts.append("o.provider_id = :provider_id")
+        params["provider_id"] = pid
+    if cid is not None:
+        where_parts.append("o.country_id = :country_id")
+        params["country_id"] = cid
+    if oid is not None:
+        where_parts.append("o.operator_id = :operator_id")
+        params["operator_id"] = oid
+
+    sql_numbers = text(f"""
         SELECT DISTINCT o.phone_number_str
         FROM orphan_sms o
-        LEFT JOIN phone_numbers pn ON o.phone_number_str = pn.number_str
-        WHERE
-            o.source_addr = :source_addr
-            AND (:provider_id IS NULL OR COALESCE(o.provider_id, pn.provider_id) = :provider_id)
-            AND (:country_id  IS NULL OR COALESCE(o.country_id,  pn.country_id)  = :country_id)
-            AND (:operator_id IS NULL OR COALESCE(o.operator_id, pn.operator_id) = :operator_id)
+        WHERE {' AND '.join(where_parts)}
         ORDER BY o.phone_number_str
-        """
-    ).bindparams(
-        bindparam("provider_id", type_=Integer),
-        bindparam("country_id", type_=Integer),
-        bindparam("operator_id", type_=Integer),
-        bindparam("source_addr", type_=String),
-    )
+    """)
 
-    sql_names = text(
-        """
-        SELECT 
-            (SELECT name FROM providers WHERE id = :provider_id) AS provider_name,
-            (SELECT name FROM countries WHERE id = :country_id) AS country_name,
-            (SELECT name FROM operators WHERE id = :operator_id) AS operator_name
-        """
-    ).bindparams(
-        bindparam("provider_id", type_=Integer),
-        bindparam("country_id", type_=Integer),
-        bindparam("operator_id", type_=Integer),
-    )
+    numbers = [row[0] for row in db.execute(sql_numbers, params).fetchall()]
 
-    params = {
-        "provider_id": pid,
-        "country_id": cid,
-        "operator_id": oid,
-        "source_addr": source_addr,
-    }
-
-    res_numbers = db.execute(sql_numbers, params)
-    res_names = db.execute(sql_names, params)
-
-    numbers = [row[0] for row in res_numbers.fetchall()]
-    names = res_names.fetchone()
+    res_names = db.execute(text(
+        "SELECT (SELECT name FROM providers WHERE id = :p), "
+        "       (SELECT name FROM countries WHERE id = :c), "
+        "       (SELECT name FROM operators WHERE id = :o)"
+    ), {"p": pid, "c": cid, "o": oid}).fetchone()
 
     if format == "csv":
         stream = io.StringIO()
@@ -407,19 +587,100 @@ def get_orphan_numbers_detail(
         for number in numbers:
             writer.writerow([number])
         response = StreamingResponse(iter([stream.getvalue()]), media_type="text/csv")
-        response.headers["Content-Disposition"] = f"attachment; filename=numbers_{source_addr}.csv"
+        fn = f'numbers_{source_addr}_{start_dt.strftime("%Y%m%d")}_{end_dt.strftime("%Y%m%d")}.csv'
+        response.headers["Content-Disposition"] = f'attachment; filename="{fn}"'
         return response
 
     context = {
-        "request": request,
-        "numbers": numbers,
-        "provider_name": (names.provider_name if names and names.provider_name else "N/A"),
-        "country_name": (names.country_name if names and names.country_name else "N/A"),
-        "operator_name": (names.operator_name if names and names.operator_name else "N/A"),
-        "source_addr": source_addr,
+        "request": request, "numbers": numbers,
+        "provider_name": (res_names[0] if res_names else None) or "—",
+        "country_name": (res_names[1] if res_names else None) or "—",
+        "operator_name": (res_names[2] if res_names else None) or "—",
+        "source_addr": source_addr, "start_date_str": start_dt.isoformat(), "end_date_str": end_dt.isoformat(),
+        "provider_id": pid, "country_id": cid, "operator_id": oid,
     }
     return templates.TemplateResponse("orphan_numbers_detail_tool.html", context)
 
+# --------------------------
+# Экспорт текущего среза «осиротевших» групп (CSV)
+# --------------------------
+@router.get("/tools/orphan/export", tags=["Tools"])
+def export_orphan_groups_csv(
+    request: Request,
+    db: Session = Depends(get_db),
+    start_date_str: Optional[str] = None,
+    end_date_str: Optional[str] = None,
+    ot_search_sender: Optional[str] = None,
+    ot_provider_id: Optional[str] = None,
+    ot_country_id: Optional[str] = None,
+    ot_operator_id: Optional[str] = None,
+):
+    try:
+        start_date = datetime.datetime.strptime(start_date_str, "%Y-%m-%d").replace(tzinfo=datetime.timezone.utc) if start_date_str else \
+            (datetime.datetime.now(datetime.timezone.utc) - timedelta(days=6)).replace(hour=0, minute=0, second=0, microsecond=0)
+        end_date = datetime.datetime.strptime(end_date_str, "%Y-%m-%d").replace(hour=23, minute=59, second=59, microsecond=999999, tzinfo=datetime.timezone.utc) if end_date_str else \
+            datetime.datetime.now(datetime.timezone.utc)
+    except (ValueError, TypeError):
+        start_date = (datetime.datetime.now(datetime.timezone.utc) - timedelta(days=6)).replace(hour=0, minute=0, second=0, microsecond=0)
+        end_date = datetime.datetime.now(datetime.timezone.utc)
+
+    ot_params: Dict[str, Any] = {"start_date": start_date, "end_date": end_date}
+    where_parts = ["o.received_at BETWEEN :start_date AND :end_date"]
+    if ot_search_sender:
+        where_parts.append("o.source_addr ILIKE :sender")
+        ot_params["sender"] = f"%{ot_search_sender}%"
+    if ot_provider_id and ot_provider_id.isdigit():
+        where_parts.append("o.provider_id = :ot_provider_id")
+        ot_params["ot_provider_id"] = int(ot_provider_id)
+    if ot_country_id and ot_country_id.isdigit():
+        where_parts.append("o.country_id = :ot_country_id")
+        ot_params["ot_country_id"] = int(ot_country_id)
+    if ot_operator_id and ot_operator_id.isdigit():
+        where_parts.append("o.operator_id = :ot_operator_id")
+        ot_params["ot_operator_id"] = int(ot_operator_id)
+    where_sql = " AND ".join(where_parts)
+
+    # Экспорт без JOIN: имена восстановим через кэш
+    base_sql = text(f"""
+        SELECT
+            o.provider_id  AS provider_id,
+            o.source_addr  AS source_addr,
+            o.country_id   AS country_id,
+            o.operator_id  AS operator_id,
+            MIN(o.text)                        AS sample_text,
+            COUNT(o.id)                        AS sms_count,
+            COUNT(DISTINCT o.phone_number_str) AS unique_numbers_count
+        FROM orphan_sms o
+        WHERE {where_sql}
+        GROUP BY 1,2,3,4
+        ORDER BY sms_count DESC
+    """)
+
+    def _gen():
+        prov_map = {p.id: p.name for p in get_cached_providers()}
+        country_map = {c.id: c.name for c in get_cached_countries()}
+        oper_map = {o.id: o.name for o in get_cached_operators()}
+        buf = io.StringIO()
+        writer = csv.writer(buf)
+        writer.writerow(["provider", "sender", "country", "operator", "sms_count", "unique_numbers", "sample_text"])
+        yield buf.getvalue()
+        buf.seek(0); buf.truncate(0)
+        # убрали .yield_per(1000) — это Core-результат
+        for row in db.execute(base_sql, ot_params):
+            writer.writerow([
+                prov_map.get(row.provider_id, "—"),
+                row.source_addr,
+                country_map.get(row.country_id, "—"),
+                oper_map.get(row.operator_id, "—"),
+                int(row.sms_count), int(row.unique_numbers_count),
+                (row.sample_text or "")[:200].replace("\n", " "),
+            ])
+            yield buf.getvalue()
+            buf.seek(0); buf.truncate(0)
+
+    filename = f'orph_groups_{start_date.strftime("%Y%m%d")}_{end_date.strftime("%Y%m%d")}.csv'
+    headers = {"Content-Disposition": f'attachment; filename="{filename}"'}
+    return StreamingResponse(_gen(), media_type="text/csv", headers=headers)
 
 # --------------------------
 # Массовая установка лимитов
@@ -435,32 +696,28 @@ async def handle_bulk_limits(
     try:
         updated_count, created_count = 0, 0
         for service_id in service_ids:
-            limit = (
-                db.query(models.ServiceLimit)
-                .filter_by(service_id=service_id, provider_id=provider_id, country_id=country_id)
-                .first()
-            )
+            limit = db.query(models.ServiceLimit).filter_by(
+                service_id=service_id, provider_id=provider_id, country_id=country_id
+            ).first()
             if limit:
                 limit.daily_limit = daily_limit
                 updated_count += 1
             else:
-                db.add(
-                    models.ServiceLimit(
-                        service_id=service_id, provider_id=provider_id, country_id=country_id, daily_limit=daily_limit
-                    )
-                )
+                db.add(models.ServiceLimit(
+                    service_id=service_id, provider_id=provider_id, country_id=country_id, daily_limit=daily_limit
+                ))
                 created_count += 1
         db.commit()
         return RedirectResponse(
             url=f"/tools?success=Успешно! Обновлено: {updated_count}, создано: {created_count}.&tab=bulk-limits-pane",
-            status_code=303,
+            status_code=303
         )
     except Exception as e:
         db.rollback()
         return RedirectResponse(
-            url=f"/tools?error=Ошибка БД: {str(e)[:100]}&tab=bulk-limits-pane", status_code=303
+            url=f"/tools?error=Ошибка БД: {str(e)[:100]}&tab=bulk-limits-pane",
+            status_code=303
         )
-
 
 # --------------------------
 # Импорт номеров из файла
@@ -476,49 +733,44 @@ async def handle_file_upload(
     op_id = int(operator_id) if operator_id and operator_id.isdigit() else None
     content = await file.read()
     lines = content.decode("utf-8", errors="ignore").splitlines()
-
-    # Нормализация и фильтрация пустых результатов
-    raw_candidates = {normalize_phone_number(line.strip()) for line in lines}
-    candidate_numbers = {n for n in raw_candidates if n}  # убираем "" (пустые)
+    candidate_numbers = {n for n in (normalize_phone_number(line.strip()) for line in lines) if n}
     invalid_count = len(lines) - len(candidate_numbers)
-
     added_count, skipped_count = 0, 0
     candidate_list = list(candidate_numbers)
     batch_size = 5000
-
     try:
         for i in range(0, len(candidate_list), batch_size):
             batch = candidate_list[i : i + batch_size]
             existing_in_batch = {
-                n[0] for n in db.query(models.PhoneNumber.number_str).filter(models.PhoneNumber.number_str.in_(batch))
+                n[0] for n in db.query(models.PhoneNumber.number_str)
+                                .filter(models.PhoneNumber.number_str.in_(batch))
             }
             skipped_count += len(existing_in_batch)
-            new_numbers_to_add = [
-                {
-                    "number_str": num,
-                    "provider_id": provider_id,
-                    "country_id": country_id,
-                    "operator_id": op_id,
-                    "is_active": True,
-                    "is_in_use": False,
-                }
-                for num in batch
-                if num not in existing_in_batch
-            ]
+            new_numbers_to_add = [{
+                "number_str": num, "provider_id": provider_id, "country_id": country_id,
+                "operator_id": op_id, "is_active": True, "is_in_use": False,
+                "sort_order": _make_sort_order(),  # добавили заполнение NOT NULL поля
+            } for num in batch if num not in existing_in_batch]
             if new_numbers_to_add:
                 db.bulk_insert_mappings(models.PhoneNumber, new_numbers_to_add)
                 added_count += len(new_numbers_to_add)
         db.commit()
+        # мягко обновим только быстрый счётчик, чтобы /tools показывал верно
+        if redis_client:
+            try:
+                redis_client.delete("tools:pn_counts")
+            except Exception:
+                pass
         return RedirectResponse(
             url=f"/tools?success=Добавлено {added_count}. Дублей: {skipped_count}, невалидных: {invalid_count}.&tab=importer-pane",
-            status_code=303,
+            status_code=303
         )
     except Exception as e:
         db.rollback()
         return RedirectResponse(
-            url=f"/tools?error=Ошибка БД: {str(e)[:100]}&tab=importer-pane", status_code=303
+            url=f"/tools?error=Ошибка БД: {str(e)[:100]}&tab=importer-pane",
+            status_code=303
         )
-
 
 # --------------------------
 # Генератор диапазонов
@@ -543,33 +795,45 @@ def handle_range_generation(
             lower = mask.lower()
             if "x" not in lower:
                 continue
+
             prefix = lower.split("x")[0]
             num_x = lower.count("x")
+            if num_x <= 0:
+                continue
 
-            # Генерация уникальных вариантов
-            candidates_to_generate = set()
-            max_attempts = int(quantity * 1.5) + 1000
-            while len(candidates_to_generate) < quantity and len(candidates_to_generate) < max_attempts:
-                candidates_to_generate.add(f"{prefix}{''.join(random.choices(string.digits, k=num_x))}")
+            # --- генерируем ровно quantity уникальных хвостов (или все возможные, если quantity >= 10**num_x)
+            space = 10 ** num_x
+            if quantity >= space:
+                # все возможные комбинации, перемешанные
+                tails = [f"{i:0{num_x}d}" for i in range(space)]
+                random.shuffle(tails)
+                candidate_list = [f"{prefix}{t}" for t in tails]
+            else:
+                # выбор без повторов из пространства
+                tails_int = random.sample(range(space), k=quantity)
+                candidate_list = [f"{prefix}{i:0{num_x}d}" for i in tails_int]
 
-            candidate_list = list(candidates_to_generate)
+            # нормализуем кандидатов в единый формат (как в импорте) — корректная дедупликация
+            candidate_list = [n for n in (normalize_phone_number(x) for x in candidate_list) if n]
+
+            if not candidate_list:
+                continue
+
             existing_numbers = {
-                n[0]
-                for n in db.query(models.PhoneNumber.number_str).filter(models.PhoneNumber.number_str.in_(candidate_list))
+                n[0] for n in db.query(models.PhoneNumber.number_str)
+                                 .filter(models.PhoneNumber.number_str.in_(candidate_list))
             }
 
-            new_numbers_to_add = [
-                {
-                    "number_str": num,
-                    "provider_id": provider_id,
-                    "country_id": country_id,
-                    "operator_id": op_id,
-                    "is_active": True,
-                    "is_in_use": False,
-                }
-                for num in candidate_list
-                if num not in existing_numbers
-            ]
+            new_numbers_to_add = [{
+                "number_str": num,
+                "provider_id": provider_id,
+                "country_id": country_id,
+                "operator_id": op_id,
+                "is_active": True,
+                "is_in_use": False,
+                "sort_order": _make_sort_order(),  # заполняем NOT NULL
+            } for num in candidate_list if num not in existing_numbers]
+
             if new_numbers_to_add:
                 db.bulk_insert_mappings(models.PhoneNumber, new_numbers_to_add)
                 total_generated_count += len(new_numbers_to_add)
@@ -577,106 +841,111 @@ def handle_range_generation(
             total_skipped_count += (len(candidate_list) - len(new_numbers_to_add))
 
         db.commit()
+
+        # мягко обновим быстрый кэш счётчиков
+        if redis_client:
+            try:
+                redis_client.delete("tools:pn_counts")
+            except Exception:
+                pass
+
         return RedirectResponse(
-            url=f"/tools?success=Сгенерировано {total_generated_count} номеров по {len(masks_list)} маскам. Дублей: {total_skipped_count}.&tab=generator-pane",
-            status_code=303,
+            url=f"/tools?success=Сгенерировано {total_generated_count} номеров. Дублей: {total_skipped_count}.&tab=generator-pane",
+            status_code=303
         )
     except Exception as e:
         db.rollback()
         return RedirectResponse(
-            url=f"/tools?error=Ошибка БД: {str(e)[:100]}&tab=generator-pane", status_code=303
+            url=f"/tools?error=Ошибка БД: {str(e)[:100]}&tab=generator-pane",
+            status_code=303
         )
 
 
 # --------------------------
-# Управление: массовое удаление и перемешивание sort_order
+# Управление: предпросмотр массового удаления
+# --------------------------
+@router.get("/manager/delete/preview", tags=["Tools"])
+def preview_mass_delete(
+    provider_id: str = "", country_id: str = "", operator_id: str = "",
+    is_in_use: str = "", prefix: str = "", db: Session = Depends(get_db),
+):
+    q = db.query(func.count(models.PhoneNumber.id))
+    if provider_id.isdigit(): q = q.filter(models.PhoneNumber.provider_id == int(provider_id))
+    if country_id.isdigit(): q = q.filter(models.PhoneNumber.country_id == int(country_id))
+    if operator_id.isdigit(): q = q.filter(models.PhoneNumber.operator_id == int(operator_id))
+    if is_in_use in ("true", "false"): q = q.filter(models.PhoneNumber.is_in_use == (is_in_use == "true"))
+    if prefix: q = q.filter(models.PhoneNumber.number_str.like(f"{prefix}%"))
+    return JSONResponse({"count": q.scalar()})
+
+# --------------------------
+# Управление: массовое удаление (фон)
 # --------------------------
 @router.post("/manager/delete", tags=["Tools"])
 async def handle_mass_delete(
     background_tasks: BackgroundTasks,
-    provider_id: str = Form(""),
-    country_id: str = Form(""),
-    is_in_use: str = Form(""),
+    provider_id: str = Form(""), country_id: str = Form(""), is_in_use: str = Form(""),
+    operator_id: str = Form(""), prefix: str = Form(""),
 ):
     try:
-        background_tasks.add_task(main_app.delete_numbers_in_background, provider_id, country_id, is_in_use)
-        return RedirectResponse(
-            url="/tools?success=Процесс массового удаления запущен (см. логи).&tab=manager-pane",
-            status_code=303,
-        )
+        background_tasks.add_task(main_app.delete_numbers_in_background, provider_id, country_id, is_in_use, operator_id, prefix)
+        return RedirectResponse(url="/tools?success=Процесс массового удаления запущен (см. логи).&tab=manager-pane", status_code=303)
     except Exception as e:
         log.error(f"Ошибка при запуске фоновой задачи удаления: {e}", exc_info=True)
-        return RedirectResponse(
-            url=f"/tools?error=Не удалось запустить задачу: {str(e)[:100]}&tab=manager-pane",
-            status_code=303,
-        )
+        return RedirectResponse(url=f"/tools?error=Не удалось запустить задачу: {str(e)[:100]}&tab=manager-pane", status_code=303)
 
-
+# --------------------------
+# Пакетное «перемешивание» sort_order (фон)
+# --------------------------
 @router.post("/manager/shuffle", tags=["Tools"])
-async def handle_shuffle(db: Session = Depends(get_db)):
+async def handle_shuffle(
+    background_tasks: BackgroundTasks,
+    provider_id: str = Form(""),
+    country_id: str = Form(""),
+    operator_id: str = Form(""),
+    db: Session = Depends(get_db),
+):
     try:
-        stmt = text(
-            """
-            WITH random_orders AS (
-              SELECT id, row_number() OVER (ORDER BY random()) AS new_order
-              FROM phone_numbers
+        if not (provider_id or country_id or operator_id):
+            return RedirectResponse(
+                url="/tools?error=Укажите хотя бы один фильтр (provider/country/operator).&tab=manager-pane",
+                status_code=303
             )
-            UPDATE phone_numbers p
-            SET sort_order = r.new_order
-            FROM random_orders r
-            WHERE p.id = r.id;
-            """
+        background_tasks.add_task(
+            main_app.shuffle_numbers_in_background,
+            provider_id, country_id, operator_id
         )
-        result = db.execute(stmt)
-        db.commit()
         return RedirectResponse(
-            url=f"/tools?success=Перемешано {result.rowcount} номеров.&tab=manager-pane", status_code=303
+            url="/tools?success=Перемешивание запущено в фоне (смотрите логи).&tab=manager-pane",
+            status_code=303
         )
     except Exception as e:
-        db.rollback()
-        return RedirectResponse(url=f"/tools?error=Ошибка БД: {str(e)}&tab=manager-pane", status_code=303)
+        log.error(f"Ошибка перемешивания: {e}", exc_info=True)
+        return RedirectResponse(
+            url=f"/tools?error=Ошибка: {str(e)[:180]}&tab=manager-pane",
+            status_code=303
+        )
 
+# --------------------------
+# Обогащение «осиротевших» (фон)
+# --------------------------
 def enrich_orphans_in_background():
-    # Отдельно импортируем, чтобы не было циклов
-    from .database import SessionLocal
-    from .utils import normalize_phone_number
-    from . import models
-    import logging
-
-    log = logging.getLogger("enrich_orphans")
     db = SessionLocal()
     try:
-        q = db.query(models.OrphanSms).filter(
-            (models.OrphanSms.provider_id.is_(None)) |
-            (models.OrphanSms.country_id.is_(None)) |
-            (models.OrphanSms.operator_id.is_(None))
-        )
-
-        total, filled = 0, 0
-        for o in q.yield_per(1000):
-            total += 1
-            # Нормализуем номер (на случай “сырых” исторических данных)
-            norm = normalize_phone_number(o.phone_number_str)
-            if norm and norm != o.phone_number_str:
-                o.phone_number_str = norm
-
-            pn = db.query(models.PhoneNumber).filter(
-                models.PhoneNumber.number_str == o.phone_number_str
-            ).first()
-
-            if pn:
-                if o.provider_id is None: o.provider_id = pn.provider_id
-                if o.country_id  is None: o.country_id  = pn.country_id
-                if o.operator_id is None: o.operator_id = pn.operator_id
-                filled += 1
-
-            if total % 500 == 0:
-                db.flush()
-
+        log.info("[ENRICH] Запуск фонового обогащения...")
+        sql = text("""
+            UPDATE orphan_sms o SET
+                provider_id = COALESCE(o.provider_id, pn.provider_id),
+                country_id  = COALESCE(o.country_id,  pn.country_id),
+                operator_id = COALESCE(o.operator_id, pn.operator_id)
+            FROM phone_numbers pn
+            WHERE o.phone_number_str = pn.number_str
+              AND (o.provider_id IS NULL OR o.country_id IS NULL OR o.operator_id IS NULL)
+        """)
+        result = db.execute(sql)
         db.commit()
-        log.info(f"[ENRICH] processed={total}, enriched={filled}")
+        log.info(f"[ENRICH] Готово. Обновлено строк: {result.rowcount}")
     except Exception as e:
-        log.exception("[ENRICH] failed: %s", e)
+        log.exception("[ENRICH] Ошибка: %s", e)
         db.rollback()
     finally:
         db.close()
@@ -684,17 +953,9 @@ def enrich_orphans_in_background():
 @router.post("/tools/orphans/enrich", tags=["Tools"])
 async def trigger_enrich_orphans(background_tasks: BackgroundTasks):
     background_tasks.add_task(enrich_orphans_in_background)
-    return RedirectResponse(
-        url="/tools?success=Обогащение осиротевших запущено.&tab=orphan-traffic-pane",
-        status_code=303
-    )
-    
+    return RedirectResponse(url="/tools?success=Обогащение осиротевших запущено.&tab=orphan-traffic-pane", status_code=303)
+
 @router.get("/tools/orphans/enrich", tags=["Tools"])
 async def trigger_enrich_orphans_get(background_tasks: BackgroundTasks):
     background_tasks.add_task(enrich_orphans_in_background)
-    return RedirectResponse(
-        url="/tools?success=Обогащение осиротевших запущено.&tab=orphan-traffic-pane",
-        status_code=303
-    )
-
-# ============================================================================
+    return RedirectResponse(url="/tools?success=Обогащение осиротевших запущено.&tab=orphan-traffic-pane", status_code=303)

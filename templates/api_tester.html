@@ -1,0 +1,302 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>API Tester (простой)</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  *,*::before,*::after{box-sizing:border-box}
+  html,body{margin:0}
+  :root{--bg:#f6f7fb;--card:#fff;--mut:#6b7280;--text:#0f172a;--bd:#e5e7eb;--primary:#111827;--okbg:#e0f2fe;--okbd:#0ea5e9;--warnbg:#fef3c7;--warnd:#f59e0b;--dangbg:#fee2e2;--dangd:#ef4444}
+  body{font-family:system-ui,-apple-system,"Segoe UI",Roboto,Arial,sans-serif;background:var(--bg);color:var(--text)}
+  .wrap{max-width:1100px;margin:20px auto;padding:0 14px}
+  h1{margin:0 0 10px;font-size:20px}
+  h3{margin:0 0 6px;font-size:16px}
+  .muted{color:var(--mut);font-size:12px}
+  .card{background:#fff;border:1px solid var(--bd);border-radius:12px;padding:12px;margin-bottom:12px}
+  .grid{display:grid;gap:8px}
+  .g-3{grid-template-columns:repeat(3,minmax(180px,1fr))}
+  .g-4{grid-template-columns:repeat(4,minmax(160px,1fr))}
+  @media (max-width:900px){.g-3{grid-template-columns:1fr}.g-4{grid-template-columns:repeat(2,1fr)}}
+  label{display:block;margin-bottom:4px;font-size:12px;color:#374151}
+  input,button{height:40px;border:1px solid var(--bd);border-radius:10px;padding:0 12px;font-size:14px;background:#fff}
+  input:focus{outline:none;border-color:#cbd5e1;box-shadow:0 0 0 3px rgba(148,163,184,.25)}
+  .btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;cursor:pointer;white-space:nowrap}
+  .btn.primary{background:var(--primary);border-color:var(--primary);color:#fff}
+  .btn.ok{background:var(--okbg);border-color:var(--okbd)}
+  .btn.warn{background:var(--warnbg);border-color:var(--warnd)}
+  .btn.danger{background:var(--dangbg);border-color:var(--dangd)}
+  .btn.ghost{background:#fff}
+  .btn + .btn{margin-left:8px}
+  .between{display:flex;justify-content:space-between;align-items:center;gap:8px}
+  .chips{display:flex;flex-wrap:wrap;gap:6px;margin-top:6px}
+  .chip{padding:6px 10px;border:1px solid var(--bd);border-radius:999px;font-size:13px;background:#fff;cursor:pointer}
+  .mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+  table{width:100%;border-collapse:collapse;background:#fff;border:1px solid var(--bd);border-radius:12px;overflow:hidden}
+  th,td{padding:8px;border-bottom:1px solid #f1f2f4;vertical-align:top;font-size:13px}
+  th{background:#f8fafc;text-align:left}
+  .row-actions{display:flex;flex-wrap:wrap;gap:6px}
+  .log{height:170px;overflow:auto;background:#0b1020;color:#d1fae5;border-radius:10px;padding:10px;font-size:12px}
+  details>summary{cursor:pointer;padding:4px 0;color:#334155}
+  .help{background:#f8fafc;border:1px dashed #dbe0e6;border-radius:12px;padding:10px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="between">
+    <h1>Тестер API (отдельная страница)</h1>
+    <div class="muted">Alt+N — взять номер · Alt+S — опрос · Alt+1/6/8 — статусы</div>
+  </div>
+
+  <!-- Инструкция -->
+  <div class="card help">
+    <b>Как пользоваться (коротко):</b>
+    <ol style="margin:8px 0 0 18px; padding:0; line-height:1.5">
+      <li>Вставь <b>API Key</b> и введи <b>Country ID</b>.</li>
+      <li>Нажми <b>Найти сервисы</b> → кликни по нужному сервису (код подставится).</li>
+      <li>Жми <b>Взять 1 номер</b> или <b>Взять пакет</b>.</li>
+      <li>Чтобы получить код — запускай <b>Старт авто</b> или жми <b>Получить SMS</b> в строке.</li>
+      <li>Закрыть/отменить — кнопки <b>Статус 6</b> (успех) / <b>Статус 8</b> (отмена).</li>
+      <li>«Ручной номер» и «Маска/CSV» — в разделе <b>Дополнительно</b> ниже.</li>
+    </ol>
+  </div>
+
+  <!-- Минимальные поля -->
+  <div class="card">
+    <div class="grid g-3">
+      <div><label>API Key (обязательно)</label><input id="apiKey" placeholder="вставь api_key"></div>
+      <div><label>Country ID (обязательно)</label><input id="country" placeholder="например 78"></div>
+      <div>
+        <label>Service (код сервиса)</label>
+        <div class="between" style="gap:8px">
+          <input id="svc" placeholder="например lf" style="flex:1">
+          <button class="btn ghost" id="btnFindServices" style="flex:0 0 auto">Найти сервисы</button>
+        </div>
+        <div id="svcHints" class="chips"></div>
+      </div>
+    </div>
+
+    <div style="margin-top:8px">
+      <button class="btn primary" id="btnTakeOne">Взять 1 номер</button>
+      <button class="btn ok" id="btnTakeBatch">Взять пакет (5)</button>
+      <button class="btn ghost" id="btnStartAuto">Старт авто</button>
+      <button class="btn ghost" id="btnStopAuto">Стоп авто</button>
+    </div>
+
+    <details style="margin-top:10px">
+      <summary>Расширенные настройки (обычно не трогать)</summary>
+      <div class="grid g-4" style="margin-top:8px">
+        <div><label>Operator (необязательно)</label><input id="operator" placeholder=""></div>
+        <div><label>Provider (необязательно)</label><input id="provider" placeholder=""></div>
+        <div><label>Размер пакета</label><input id="batch" type="number" min="1" max="50" value="5"></div>
+        <div><label>Интервал авто-опроса, сек</label><input id="pollEvery" type="number" min="2" value="5"></div>
+        <div><label>Локальный таймер блокировки, мин</label><input id="blockMins" type="number" min="1" value="20"></div>
+        <div><label>Regex кода</label><input id="codeRegex" value="\\b(\\d{4,8})\\b"></div>
+        <div><label>Base URL сервера</label><input id="baseUrl" placeholder="оставь пустым, если тот же домен"></div>
+        <div><label>Путь handler</label><input id="handlerPath" value="/stubs/handler_api.php"></div>
+      </div>
+    </details>
+  </div>
+
+  <!-- Дополнительно -->
+  <div class="card">
+    <h3>Дополнительно</h3>
+    <details open>
+      <summary>Ручной номер (getRepeatNumber)</summary>
+      <div class="grid g-4" style="margin-top:8px">
+        <div><label>Ручной номер</label><input id="manualNumber" placeholder="+49..."></div>
+        <div style="display:flex;align-items:end"><button class="btn ghost" id="btnTakeManual">Взять этот номер</button></div>
+      </div>
+    </details>
+    <details>
+      <summary>Маска/CSV для Импортера</summary>
+      <div class="grid g-4" style="margin-top:8px">
+        <div><label>Маска (491703527xxx)</label><input id="mask" placeholder="491703527xxx"></div>
+        <div><label>Сколько сгенерировать</label><input id="maskQty" type="number" min="1" value="5"></div>
+        <div style="display:flex;align-items:end;gap:8px">
+          <button class="btn ghost" id="btnGenMask">Сгенерировать</button>
+          <button class="btn ok" id="btnExportCsv">Экспорт CSV</button>
+          <span class="muted" id="maskHint">Буфер: 0</span>
+        </div>
+      </div>
+    </details>
+  </div>
+
+  <!-- Таблица -->
+  <div class="card">
+    <div class="between"><h3>Сессии</h3><div class="muted">Работает через /stubs/handler_api.php</div></div>
+    <div style="overflow-x:auto">
+      <table>
+        <thead>
+          <tr><th>ID</th><th>Номер</th><th>Сервис/Страна</th><th>Статус</th><th>Таймер</th><th>Действия</th><th>Код / Полный SMS</th></tr>
+        </thead>
+        <tbody id="tbody"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- Лог -->
+  <div class="card"><h3>Лог</h3><div class="log" id="log"></div></div>
+</div>
+
+<script>
+(function(){
+  const $ = id => document.getElementById(id);
+  const state = { rows:new Map(), autoTimer:null, buf:new Set() };
+
+  // ===== помощники =====
+  const base=()=>($("#baseUrl").value||"").replace(/\/+$/,"");
+  const handler=()=>`${base()}${($("#handlerPath").value||"/stubs/handler_api.php")}`;
+  const sleep=ms=>new Promise(r=>setTimeout(r,ms));
+  const log=(m,t="info")=>{ const el=$("#log"); el.textContent+=`[${new Date().toLocaleTimeString()}] ${t.toUpperCase()}: ${m}\n`; el.scrollTop=el.scrollHeight; };
+  const fmt=s=>!s||s<0?"—":`${Math.floor(s/60)}:${String(s%60).padStart(2,"0")}`;
+
+  function render(){
+    const tb=$("#tbody"); tb.innerHTML="";
+    const arr=[...state.rows.values()].sort((a,b)=>b.id-a.id);
+    for(const s of arr){
+      const tr=document.createElement("tr");
+      const sms = s.sms ? `<details ${s.code?"":"open"}><summary class="muted">Полный SMS</summary><div class="mono" style="white-space:pre-wrap;background:#f9fafb;border:1px dashed #e2e8f0;border-radius:10px;padding:8px">${s.sms}</div></details>` : "<div class='muted'>—</div>";
+      tr.innerHTML = `
+        <td class="mono">${s.id}</td>
+        <td class="mono">${s.number||"—"}</td>
+        <td><span class="chip mono">${s.svc||"-"}</span> <span class="chip mono">${s.country||"-"}</span></td>
+        <td><span class="chip">${s.status||"-"}</span></td>
+        <td class="mono">${fmt(s.timer||0)}</td>
+        <td>
+          <div class="row-actions">
+            <button class="btn ghost" data-act="poll" data-id="${s.id}">Получить SMS</button>
+            <button class="btn warn"  data-act="st" data-val="1" data-id="${s.id}">Статус 1</button>
+            <button class="btn warn"  data-act="st" data-val="6" data-id="${s.id}">Статус 6</button>
+            <button class="btn danger"data-act="st" data-val="8" data-id="${s.id}">Статус 8</button>
+            <button class="btn ghost" data-act="rm"   data-id="${s.id}">Удалить</button>
+          </div>
+        </td>
+        <td>${s.code?`<div><b>Код:</b> <span class="mono">${s.code}</span></div>`:"<div class='muted'>Код не получен</div>"}${sms}</td>`;
+      tb.appendChild(tr);
+    }
+  }
+  function upsert(id, patch){ const r=state.rows.get(id)||{id,status:"-",svc:$("#svc").value.trim(),country:$("#country").value.trim()};
+    Object.assign(r,patch); state.rows.set(id,r); render(); }
+
+  async function call(params){
+    const url=`${handler()}?${new URLSearchParams(params).toString()}`;
+    const resp=await fetch(url); const text=await resp.text();
+    log(`GET ${url}\n${text}`, resp.ok?"ok":"error");
+    return {ok:resp.ok, text};
+  }
+
+  // ===== работа =====
+  async function findServices(){
+    const api_key=$("#apiKey").value.trim();
+    const country=$("#country").value.trim();
+    if(!api_key || !country){ log("Нужны API Key и Country ID","error"); return; }
+    const r = await call({action:"getNumbersStatus", api_key, country});
+    let obj=null; try{ obj=JSON.parse(r.text); }catch{ log("Не получилось разобрать ответ getNumbersStatus","error"); return; }
+    const box=$("#svcHints"); box.innerHTML="";
+    Object.entries(obj).forEach(([k,v])=>{
+      const code = k.replace(/_0$/,'');
+      const btn = document.createElement("button");
+      btn.className="chip"; btn.textContent = `${code} (${v})`;
+      btn.onclick = () => { $("#svc").value = code; };
+      box.appendChild(btn);
+    });
+    if(!box.childElementCount){ box.innerHTML = "<span class='muted'>Сервисы не найдены для этой страны</span>"; }
+  }
+
+  async function takeOne(){
+    const api_key=$("#apiKey").value.trim(), service=$("#svc").value.trim(), country=$("#country").value.trim();
+    if(!api_key||!service||!country){ log("Укажи API Key, Service и Country","error"); return; }
+    const p={action:"getNumber", api_key, service, country};
+    const op=$("#operator").value.trim(); if(op) p.operator=op;
+    const pr=$("#provider").value.trim(); if(pr) p.provider=pr;
+    const {text}=await call(p);
+    if(text.startsWith("ACCESS_NUMBER")){
+      const a=text.trim().split(":"); const id=Number(a[1]); const num=a[2];
+      const mins=Math.max(1,Number($("#blockMins").value||"20"));
+      upsert(id,{number:num,status:"ACCESS_NUMBER",timer:mins*60, code:null, sms:null});
+      return id;
+    } else {
+      upsert(Date.now(),{status:text}); return null;
+    }
+  }
+  async function takeBatch(){ const n=Math.min(50,Math.max(1,Number($("#batch").value||"5"))); for(let i=0;i<n;i++){ await takeOne(); await sleep(150);} }
+
+  async function poll(id){
+    const api_key=$("#apiKey").value.trim();
+    const {text}=await call({action:"getStatus", api_key, id});
+    let code=null, status=text.trim();
+    if(text.startsWith("STATUS_OK:")){ code=text.split(":")[1]?.trim()||null; status="HAS_CODE"; }
+    if(!code){ try{ const re=new RegExp($("#codeRegex").value,"m"); const m=text.match(re); if(m) code=m[1]||m[0]; }catch{} }
+    upsert(Number(id),{code,status,sms:text});
+  }
+
+  async function setStatus(id,val){
+    const api_key=$("#apiKey").value.trim();
+    const {text}=await call({action:"setStatus", api_key, id, status:val});
+    upsert(Number(id),{status:`STATUS_${val}: ${text}`});
+  }
+
+  function startAuto(){ if(state.autoTimer) return; const every=Math.max(2,Number($("#pollEvery").value||"5"));
+    state.autoTimer=setInterval(async()=>{ for(const r of state.rows.values()) await poll(r.id); }, every*1000); }
+  function stopAuto(){ if(state.autoTimer){ clearInterval(state.autoTimer); state.autoTimer=null; } }
+  setInterval(()=>{ for(const r of state.rows.values()){ if(r.timer&&r.timer>0) r.timer--; } render(); },1000);
+
+  // ручной номер
+  $("#btnTakeManual").onclick = async ()=>{
+    const number=$("#manualNumber").value.trim();
+    const api_key=$("#apiKey").value.trim(), service=$("#svc").value.trim(), country=$("#country").value.trim();
+    if(!number||!api_key||!service){ log("Нужны номер, API Key и Service","error"); return; }
+    const p={action:"getRepeatNumber", api_key, service, number}; if(country) p.country=country;
+    const op=$("#operator").value.trim(); if(op) p.operator=op; const pr=$("#provider").value.trim(); if(pr) p.provider=pr;
+    const {text}=await call(p);
+    if(text.startsWith("ACCESS_NUMBER")){
+      const a=text.trim().split(":"); const id=Number(a[1]); const num=a[2];
+      const mins=Math.max(1,Number($("#blockMins").value||"20"));
+      upsert(id,{number:num,status:"ACCESS_NUMBER",timer:mins*60, code:null, sms:null});
+    } else {
+      upsert(Date.now(),{status:text});
+    }
+  };
+
+  // маска/CSV
+  function refreshBuf(){ $("#maskHint").textContent = `Буфер: ${state.buf.size}`; }
+  $("#btnGenMask").onclick = ()=>{
+    const v=$("#mask").value.trim(); const qty=Number($("#maskQty").value||"1");
+    const m=v.match(/^(\d+)(x+)$/i); if(!m){ log("Неверная маска","error"); return; }
+    const prefix=m[1], xs=m[2].length;
+    while(state.buf.size<qty){ let t=""; for(let i=0;i<xs;i++) t+=Math.floor(Math.random()*10); state.buf.add(prefix+t); if(state.buf.size>10000)break; }
+    refreshBuf();
+  };
+  $("#btnExportCsv").onclick = ()=>{
+    const rows=[["number","service","country","operator","provider"]];
+    const svc=$("#svc").value.trim(), c=$("#country").value.trim(), op=$("#operator").value.trim(), pr=$("#provider").value.trim();
+    for(const n of state.buf) rows.push([n,svc,c,op,pr]);
+    const csv=rows.map(r=>r.join(";")).join("\n");
+    const blob=new Blob([csv],{type:"text/csv;charset=utf-8"});
+    const a=document.createElement("a"); a.href=URL.createObjectURL(blob); a.download="manual_numbers.csv"; a.click(); URL.revokeObjectURL(a.href);
+  };
+
+  // события UI
+  $("#btnFindServices").onclick=findServices;
+  $("#btnTakeOne").onclick=takeOne;
+  $("#btnTakeBatch").onclick=takeBatch;
+  $("#btnStartAuto").onclick=startAuto;
+  $("#btnStopAuto").onclick=stopAuto;
+  $("#tbody").addEventListener("click",(e)=>{ const b=e.target.closest("button"); if(!b) return;
+    const id=b.dataset.id, act=b.dataset.act, val=b.dataset.val;
+    if(act==="poll") poll(id);
+    if(act==="st") setStatus(id,val);
+    if(act==="rm"){ state.rows.delete(Number(id)); render(); }
+  });
+
+  // хоткеи
+  document.addEventListener("keydown",(e)=>{ if(!e.altKey) return;
+    if(e.key.toLowerCase()==="n"){ e.preventDefault(); takeOne(); }
+    if(e.key.toLowerCase()==="s"){ e.preventDefault(); for(const r of state.rows.values()) poll(r.id); }
+    if(["1","6","8"].includes(e.key)){ e.preventDefault(); const last=[...state.rows.values()].sort((a,b)=>a.id-b.id).pop(); if(last) setStatus(last.id,e.key); }
+  });
+})();
+</script>
+</body>
+</html>

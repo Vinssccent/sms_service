@@ -1,0 +1,313 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Комбайн для тестирования API</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css"/>
+  <link href="https://cdn.jsdelivr.net/npm/tom-select@2.2.2/dist/css/tom-select.css" rel="stylesheet">
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
+    body { font-family: 'Inter', sans-serif; background-color: #f8fafc; }
+    .ts-control { border-radius: 0.5rem !important; border-color: #d1d5db !important; padding: 0.5rem 1rem !important; }
+    .ts-dropdown { border-radius: 0.5rem !important; }
+    .result-card { transition: all 0.3s ease; }
+    .result-card.status-ok { border-left-color: #22c55e; }
+    .result-card.status-wait { border-left-color: #f59e0b; }
+    .result-card.status-error { border-left-color: #ef4444; }
+    .result-card.status-cancel { border-left-color: #64748b; }
+    .copy-btn { opacity: 0.5; transition: opacity 0.2s; }
+    .group:hover .copy-btn { opacity: 1; }
+    .blinking { animation: blink 1.5s linear infinite; }
+    @keyframes blink { 50% { opacity: 0.4; } }
+    .tab-button { border-color: transparent !important; }
+    .tab-button.active { border-bottom-color: #3b82f6 !important; color: #3b82f6 !important; }
+    .tab-pane { display: none; }
+    .tab-pane.show { display: block; }
+  </style>
+</head>
+<body class="bg-gray-100">
+<div class="container mx-auto px-4 py-8">
+  <div class="flex justify-between items-center mb-6">
+      <div>
+          <h1 class="text-3xl font-bold text-gray-800 inline-flex items-center gap-3"><i class="fa-solid fa-rocket text-blue-600"></i>Комбайн для тестирования API</h1>
+          <p class="text-gray-500 mt-1">Инструмент для ручной проверки получения SMS</p>
+      </div>
+      <a href="/tools" class="px-4 py-2 bg-gray-600 text-white rounded-lg hover:bg-gray-700 transition inline-flex items-center">
+          <i class="fas fa-arrow-left mr-2"></i> Вернуться в Инструменты
+      </a>
+  </div>
+
+  <div class="bg-white p-6 rounded-xl shadow-lg mb-8" id="controlPanel">
+      <div class="mb-4 border-b border-gray-200">
+          <ul class="flex flex-wrap -mb-px text-sm font-medium text-center" id="controlTabs">
+              <li><button class="tab-button inline-block p-4 border-b-2 rounded-t-lg active" data-tab="standard">Стандартный</button></li>
+              <li><button class="tab-button inline-block p-4 border-b-2 rounded-t-lg" data-tab="mask">Генерация по маске</button></li>
+              <li><button class="tab-button inline-block p-4 border-b-2 rounded-t-lg" data-tab="custom">Свой номер</button></li>
+          </ul>
+      </div>
+      
+      <div id="apiKeySection" class="mb-4">
+        <label for="apiKeyTester" class="block text-sm font-medium text-gray-700 mb-1">API ключ</label>
+        <select id="apiKeyTester" class="w-full">
+            <option value="">-- Введите или выберите ключ --</option>
+            {% for key in api_keys %}<option value="{{ key.key }}">{{ key.description or key.key }}</option>{% endfor %}
+        </select>
+      </div>
+
+      <div>
+          <div class="tab-pane show" id="standard-pane">
+              <div class="grid grid-cols-1 md:grid-cols-9 gap-4 items-end">
+                  <div class="md:col-span-4"><label for="serviceCode" class="block text-sm font-medium text-gray-700 mb-1">Сервис</label><select id="serviceCode" placeholder="Выберите сервис..."><option value="">-- Выберите сервис --</option>{% for s in services %}<option value="{{ s.code }}">{{ s.name }}</option>{% endfor %}</select></div>
+                  <div class="md:col-span-3"><label for="countryId" class="block text-sm font-medium text-gray-700 mb-1">Страна</label><select id="countryId" placeholder="Выберите страну..."><option value="">-- Выберите страну --</option>{% for c in countries %}<option value="{{ c.id }}">{{ c.name }}</option>{% endfor %}</select></div>
+                  <div class="md:col-span-2"><label for="batchSize" class="block text-sm font-medium text-gray-700 mb-1">Количество</label><input type="number" id="batchSize" value="1" min="1" max="10" class="w-full px-3 py-2 border border-gray-300 rounded-lg"></div>
+              </div>
+              <div class="border-t mt-6 pt-4"><button id="getNumberBtn" class="bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 px-6 rounded-lg inline-flex items-center gap-2"><i class="fa-solid fa-mobile-screen-button"></i> Получить номер</button></div>
+          </div>
+          <div class="tab-pane" id="mask-pane">
+              <div class="grid grid-cols-1 md:grid-cols-3 gap-4 items-end">
+                  <div><label for="maskInput" class="block text-sm font-medium text-gray-700 mb-1">Маска номера (напр. 7999xxxx)</label><input type="text" id="maskInput" class="w-full font-mono px-3 py-2 border border-gray-300 rounded-lg" placeholder="7999xxxx"></div>
+                  <div><label for="maskServiceCode" class="block text-sm font-medium text-gray-700 mb-1">Сервис</label><select id="maskServiceCode"><option value="">-- Сервис --</option>{% for s in services %}<option value="{{ s.code }}">{{ s.name }}</option>{% endfor %}</select></div>
+                  <div><label for="maskCountryId" class="block text-sm font-medium text-gray-700 mb-1">Страна</label><select id="maskCountryId"><option value="">-- Страна --</option>{% for c in countries %}<option value="{{ c.id }}">{{ c.name }}</option>{% endfor %}</select></div>
+              </div>
+               <div class="border-t mt-6 pt-4"><button id="generateByMaskBtn" class="bg-purple-600 hover:bg-purple-700 text-white font-bold py-2 px-6 rounded-lg inline-flex items-center gap-2"><i class="fa-solid fa-magic-wand-sparkles"></i> Сгенерировать и взять</button></div>
+          </div>
+          <div class="tab-pane" id="custom-pane">
+              <div class="grid grid-cols-1 md:grid-cols-2 gap-4 items-end">
+                  <div><label for="customNumberInput" class="block text-sm font-medium text-gray-700 mb-1">Номер телефона (с кодом страны)</label><input type="text" id="customNumberInput" class="w-full font-mono px-3 py-2 border border-gray-300 rounded-lg" placeholder="+79991234567"></div>
+                  <div><label for="customServiceCode" class="block text-sm font-medium text-gray-700 mb-1">Сервис</label><select id="customServiceCode"><option value="">-- Сервис --</option>{% for s in services %}<option value="{{ s.code }}">{{ s.name }}</option>{% endfor %}</select></div>
+              </div>
+               <div class="border-t mt-6 pt-4"><button id="useCustomBtn" class="bg-teal-600 hover:bg-teal-700 text-white font-bold py-2 px-6 rounded-lg inline-flex items-center gap-2"><i class="fa-solid fa-keyboard"></i> Взять номер</button></div>
+          </div>
+      </div>
+  </div>
+
+  <div id="resultsArea" class="space-y-4"></div>
+</div>
+
+<template id="resultCardTemplate">
+  <div class="result-card bg-white p-5 rounded-lg shadow-md border-l-4 status-wait" data-session-id="">
+    <div class="flex justify-between items-start">
+        <div>
+            <div class="flex items-center gap-4">
+                <div id="statusIcon" class="blinking text-2xl text-amber-500"><i class="fas fa-circle-notch fa-spin"></i></div>
+                <div class="font-mono text-2xl font-bold text-gray-800" id="phoneNumber">--</div>
+                <button class="copy-btn" data-copy-target="phoneNumber" title="Копировать номер"><i class="far fa-copy"></i></button>
+            </div>
+            <div class="text-sm text-gray-500 mt-1">
+                Сессия: <span class="font-semibold" id="sessionId">--</span> | 
+                Сервис: <span class="font-semibold" id="serviceName">--</span> | 
+                Страна: <span class="font-semibold" id="countryName">--</span>
+            </div>
+        </div>
+        <div class="flex items-center gap-2">
+            <button class="text-gray-600 bg-gray-200 hover:bg-gray-300 font-medium rounded-lg text-sm px-4 py-2 disabled:bg-gray-300" id="reuseBtn" disabled title="Использовать номер повторно"><i class="fas fa-redo"></i></button>
+            <button class="text-white bg-green-600 hover:bg-green-700 font-medium rounded-lg text-sm px-4 py-2 disabled:bg-gray-300" id="setStatus6Btn" disabled title="Завершить успешно (6)"><i class="fas fa-check"></i></button>
+            <button class="text-white bg-red-600 hover:bg-red-700 font-medium rounded-lg text-sm px-4 py-2 disabled:bg-gray-300" id="setStatus8Btn" disabled title="Отменить (8)"><i class="fas fa-times"></i></button>
+        </div>
+    </div>
+    <div class="border-t my-4"></div>
+    <div class="grid grid-cols-1 md:grid-cols-3 gap-4 text-sm">
+        <div><div class="text-gray-500 font-medium mb-1">Статус</div><div class="font-semibold text-gray-800" id="statusText">Ожидание...</div></div>
+        <div><div class="text-gray-500 font-medium mb-1">Таймер</div><div class="font-semibold text-gray-800" id="timer">--:--</div></div>
+        <div><div class="text-gray-500 font-medium mb-1">Код из SMS</div><div class="font-bold text-xl text-blue-600 group flex items-center gap-2" id="smsCodeWrapper"><span id="smsCode">--</span><button class="copy-btn" data-copy-target="smsCode" title="Копировать код"><i class="far fa-copy"></i></button></div></div>
+        <div class="md:col-span-3"><div class="text-gray-500 font-medium mb-1">Полный текст SMS</div><div class="bg-gray-100 p-3 rounded-md font-mono text-xs text-gray-700 h-20 overflow-y-auto" id="fullSmsText">Отправитель: <span class="font-bold" id="smsSender">--</span><br><span id="smsTextContent">--</span></div></div>
+    </div>
+  </div>
+</template>
+
+<script src="https://cdn.jsdelivr.net/npm/tom-select@2.2.2/dist/js/tom-select.complete.min.js"></script>
+<script>
+document.addEventListener('DOMContentLoaded', function () {
+    const tomSelects = {};
+    document.querySelectorAll('select').forEach(el => {
+        tomSelects[el.id] = new TomSelect(el, { create: el.id === 'apiKeyTester', placeholder: el.placeholder || 'Выберите...' });
+    });
+
+    const resultsArea = document.getElementById('resultsArea');
+    const cardTemplate = document.getElementById('resultCardTemplate');
+    const SESSION_LIFETIME_SECONDS = 5 * 60;
+    const activeSessions = new Map();
+
+    const tabsContainer = document.getElementById('controlTabs');
+    tabsContainer.addEventListener('click', (e) => {
+        if (e.target.tagName !== 'BUTTON') return;
+        tabsContainer.querySelectorAll('.tab-button').forEach(btn => btn.classList.remove('active'));
+        e.target.classList.add('active');
+        document.querySelectorAll('.tab-pane').forEach(pane => pane.classList.remove('show'));
+        document.getElementById(`${e.target.dataset.tab}-pane`).classList.add('show');
+    });
+    
+    function getApiKey() { return tomSelects['apiKeyTester'].getValue(); }
+
+    function createCard(initialData = {}) {
+        const cardClone = cardTemplate.content.cloneNode(true);
+        const cardElement = cardClone.querySelector('.result-card');
+        resultsArea.prepend(cardElement);
+        const cardData = {
+            apiKey: getApiKey(),
+            elements: {
+                card: cardElement, phoneNumber: cardElement.querySelector('#phoneNumber'),
+                sessionId: cardElement.querySelector('#sessionId'), serviceName: cardElement.querySelector('#serviceName'),
+                countryName: cardElement.querySelector('#countryName'), statusIcon: cardElement.querySelector('#statusIcon'),
+                statusText: cardElement.querySelector('#statusText'), timer: cardElement.querySelector('#timer'),
+                smsCode: cardElement.querySelector('#smsCode'), smsSender: cardElement.querySelector('#smsSender'),
+                smsTextContent: cardElement.querySelector('#smsTextContent'),
+                reuseBtn: cardElement.querySelector('#reuseBtn'),
+                btn6: cardElement.querySelector('#setStatus6Btn'), btn8: cardElement.querySelector('#setStatus8Btn'),
+            }, ...initialData
+        };
+        cardData.elements.serviceName.textContent = cardData.serviceName || '...';
+        cardData.elements.countryName.textContent = cardData.countryName || '...';
+        return cardData;
+    }
+
+    function processApiResponse(cardData, text) {
+        if (text.startsWith('ACCESS_NUMBER:')) {
+            const [, sid, phone] = text.split(':');
+            cardData.sessionId = sid; cardData.elements.card.dataset.sessionId = sid;
+            cardData.elements.sessionId.textContent = sid; cardData.elements.phoneNumber.textContent = `+${phone}`;
+            cardData.elements.statusText.textContent = 'Ожидание SMS...';
+            cardData.elements.btn6.disabled = false; cardData.elements.btn8.disabled = false; cardData.elements.reuseBtn.disabled = false;
+            cardData.elements.btn6.onclick = () => setStatus(cardData, 6); cardData.elements.btn8.onclick = () => setStatus(cardData, 8);
+            cardData.elements.reuseBtn.onclick = () => reuseNumber(cardData);
+            startPolling(cardData);
+        } else {
+            updateCardStatus(cardData, 'error', `Ошибка: ${text}`);
+            cardData.elements.phoneNumber.textContent = "Ошибка";
+        }
+    }
+
+    document.getElementById('getNumberBtn').addEventListener('click', () => {
+        const serviceCode = document.getElementById('serviceCode').value, countryId = document.getElementById('countryId').value;
+        const batchSize = parseInt(document.getElementById('batchSize').value, 10) || 1;
+        if (!getApiKey() || !serviceCode || !countryId) { alert('Заполните API ключ, сервис и страну!'); return; }
+        const serviceName = document.getElementById('serviceCode').options[document.getElementById('serviceCode').selectedIndex].text;
+        const countryName = document.getElementById('countryId').options[document.getElementById('countryId').selectedIndex].text;
+        for (let i = 0; i < batchSize; i++) {
+            const cardData = createCard({ serviceCode, countryId, serviceName, countryName });
+            const url = `/stubs/handler_api.php?action=getNumber&api_key=${encodeURIComponent(getApiKey())}&service=${encodeURIComponent(serviceCode)}&country=${encodeURIComponent(countryId)}`;
+            fetch(url).then(r => r.text()).then(text => processApiResponse(cardData, text))
+              .catch(e => { updateCardStatus(cardData, 'error', `Сетевая ошибка`); cardData.elements.phoneNumber.textContent = "Ошибка сети"; });
+        }
+    });
+
+    document.getElementById('generateByMaskBtn').addEventListener('click', () => {
+        const mask = document.getElementById('maskInput').value, serviceCode = document.getElementById('maskServiceCode').value,
+              countryId = document.getElementById('maskCountryId').value;
+        if (!getApiKey() || !mask || !serviceCode || !countryId) { alert('Заполните маску, сервис и страну!'); return; }
+        const serviceName = document.getElementById('maskServiceCode').options[document.getElementById('maskServiceCode').selectedIndex].text;
+        const countryName = document.getElementById('maskCountryId').options[document.getElementById('maskCountryId').selectedIndex].text;
+        const cardData = createCard({ serviceName, countryName });
+        fetch(`/tester/get_number_by_mask`, {
+            method: 'POST', headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ api_key: getApiKey(), mask, service_code: serviceCode, country_id: countryId })
+        }).then(r => r.text()).then(text => processApiResponse(cardData, text))
+          .catch(e => updateCardStatus(cardData, 'error', `Сетевая ошибка`));
+    });
+
+    document.getElementById('useCustomBtn').addEventListener('click', () => {
+        const number = document.getElementById('customNumberInput').value;
+        const serviceCode = document.getElementById('customServiceCode').value;
+        if (!getApiKey() || !number || !serviceCode) { alert('Заполните API ключ, номер и сервис!'); return; }
+        const serviceName = document.getElementById('customServiceCode').options[document.getElementById('customServiceCode').selectedIndex].text;
+        const cardData = createCard({ serviceName, countryName: 'Свой номер' });
+        cardData.elements.phoneNumber.textContent = number;
+        fetch(`/tester/custom_number`, {
+            method: 'POST', headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ api_key: getApiKey(), number, service_code: serviceCode })
+        }).then(r => r.text()).then(text => processApiResponse(cardData, text))
+          .catch(e => updateCardStatus(cardData, 'error', `Сетевая ошибка`));
+    });
+
+    function reuseNumber(cardData) {
+        const newService = prompt(`Введите код нового сервиса для номера ${cardData.elements.phoneNumber.textContent}:`, "go");
+        if (!newService || !newService.trim()) return;
+        const serviceName = [...document.getElementById('serviceCode').options].find(o => o.value === newService)?.text || newService;
+        const newCardData = createCard({ serviceName, countryName: cardData.elements.countryName.textContent });
+        newCardData.elements.phoneNumber.textContent = cardData.elements.phoneNumber.textContent;
+        fetch(`/tester/reuse_number`, {
+            method: 'POST', headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ api_key: getApiKey(), number: cardData.elements.phoneNumber.textContent, service_code: newService.trim() })
+        }).then(r => r.text()).then(text => processApiResponse(newCardData, text))
+          .catch(e => updateCardStatus(newCardData, 'error', `Сетевая ошибка`));
+    }
+
+    resultsArea.addEventListener('click', (e) => {
+        const button = e.target.closest('.copy-btn'); if (!button) return;
+        const card = button.closest('.result-card'), targetId = button.dataset.copyTarget;
+        const targetElement = card.querySelector(`#${targetId}`);
+        if (targetElement && targetElement.textContent !== '--') {
+            navigator.clipboard.writeText(targetElement.textContent).then(() => {
+                const icon = button.querySelector('i'); icon.classList.replace('fa-copy', 'fa-check'); icon.classList.add('text-green-500');
+                setTimeout(() => { icon.classList.replace('fa-check', 'fa-copy'); icon.classList.remove('text-green-500'); }, 1500);
+            });
+        }
+    });
+
+    function startPolling(cardData) {
+        stopPolling(cardData.sessionId);
+        const endTime = Date.now() + SESSION_LIFETIME_SECONDS * 1000;
+        const pollInterval = setInterval(() => checkStatus(cardData), 5000);
+        const timerInterval = setInterval(() => updateTimer(cardData, endTime), 1000);
+        activeSessions.set(cardData.sessionId, { pollInterval, timerInterval }); checkStatus(cardData);
+    }
+    function stopPolling(sessionId) {
+        if (activeSessions.has(sessionId)) {
+            const { pollInterval, timerInterval } = activeSessions.get(sessionId);
+            clearInterval(pollInterval); clearInterval(timerInterval); activeSessions.delete(sessionId);
+        }
+    }
+    async function checkStatus(cardData) {
+        if (!cardData.sessionId) return;
+        const url = `/tester/get_full_sms?session_id=${cardData.sessionId}`;
+        try {
+            const data = await (await fetch(url)).json();
+            if (data.status === 'ok') {
+                updateCardStatus(cardData, 'ok', 'Успех! Код получен.');
+                cardData.elements.smsCode.textContent = data.code || 'N/A';
+                cardData.elements.smsSender.textContent = data.sender || 'N/A';
+                cardData.elements.smsTextContent.textContent = data.text || 'N/A';
+                stopPolling(cardData.sessionId); cardData.elements.timer.textContent = "Готово";
+            }
+        } catch(e) { console.error("Network error on checkStatus", e); }
+    }
+    async function setStatus(cardData, status) {
+        if (!cardData.sessionId) return;
+        stopPolling(cardData.sessionId);
+        const url = `/stubs/handler_api.php?action=setStatus&api_key=${encodeURIComponent(getApiKey())}&id=${cardData.sessionId}&status=${status}`;
+        try {
+            const text = await (await fetch(url)).text();
+            if (status === 8) updateCardStatus(cardData, 'cancel', 'Сессия отменена');
+            else if (status === 6) updateCardStatus(cardData, 'ok', 'Сессия успешно завершена');
+            else updateCardStatus(cardData, 'error', `Неизвестный ответ: ${text}`);
+            cardData.elements.timer.textContent = "Завершено";
+        } catch (e) { updateCardStatus(cardData, 'error', `Сетевая ошибка`); }
+    }
+    function updateTimer(cardData, endTime) {
+        const remaining = Math.max(0, endTime - Date.now());
+        const minutes = Math.floor(remaining / 60000), seconds = Math.floor((remaining % 60000) / 1000);
+        cardData.elements.timer.textContent = `${minutes}:${seconds.toString().padStart(2, '0')}`;
+        if (remaining === 0) {
+            stopPolling(cardData.sessionId);
+            if (!cardData.elements.card.classList.contains('status-ok')) updateCardStatus(cardData, 'cancel', 'Время сессии истекло');
+        }
+    }
+    function updateCardStatus(cardData, statusType, statusText) {
+        const { card, statusIcon, statusText: statusTextEl, btn6, btn8, reuseBtn } = cardData.elements;
+        card.classList.remove('status-wait', 'status-ok', 'status-error', 'status-cancel');
+        statusIcon.classList.remove('blinking', 'text-amber-500', 'text-green-500', 'text-red-500', 'text-gray-500');
+        statusIcon.querySelector('i').className = ''; btn6.disabled = true; btn8.disabled = true;
+        switch (statusType) {
+            case 'ok': card.classList.add('status-ok'); statusIcon.classList.add('text-green-500'); statusIcon.querySelector('i').classList.add('fas', 'fa-check-circle'); reuseBtn.disabled = false; break;
+            case 'error': card.classList.add('status-error'); statusIcon.classList.add('text-red-500'); statusIcon.querySelector('i').classList.add('fas', 'fa-exclamation-triangle'); stopPolling(cardData.sessionId); reuseBtn.disabled = true; break;
+            case 'cancel': card.classList.add('status-cancel'); statusIcon.classList.add('text-gray-500'); statusIcon.querySelector('i').classList.add('fas', 'fa-ban'); stopPolling(cardData.sessionId); reuseBtn.disabled = false; break;
+            default: card.classList.add('status-wait'); statusIcon.classList.add('blinking', 'text-amber-500'); statusIcon.querySelector('i').classList.add('fas', 'fa-circle-notch', 'fa-spin'); break;
+        }
+        statusTextEl.textContent = statusText;
+    }
+});
+</script>
+</body>
+</html>

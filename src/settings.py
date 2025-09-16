@@ -35,6 +35,25 @@ class Settings(BaseSettings):
     # --- Логи/отладка ---
     LOG_SQL: bool = False  # Читает src/database.py при создании engine (echo=settings.LOG_SQL)
 
+    # --- Ротация номеров и лимиты ---
+    NUMBER_COOLDOWN_MINUTES: int = 5
+    ALLOW_COOLDOWN_FALLBACK: bool = True
+    CANDIDATE_ATTEMPTS: int = 30
+    PROVIDER_SAMPLE_SIZE: int = 8
+    BOUNDS_CACHE_TTL: int = 600
+    STRICT_LIMITS: bool = True
+    PRIME_LIMIT_TTL: int = 15
+    INCR_LIMITS_ON_SUCCESS: bool = False
+
+    # --- Redis ---
+    REDIS_HOST: str = "127.0.0.1"
+    REDIS_PORT: int = 6379
+
+    # --- Сеансы и админка ---
+    SESSION_SECRET: str = "CHANGE_ME_NOW__32+chars"
+    ADMIN_USER: str = "admin"
+    ADMIN_PASS: str = "super-secret"
+
     # --- SMPP: входящий сервер (они подключаются к нам) ---
     SMPP_BIND_HOST: str = "0.0.0.0"
     SMPP_BIND_PORT: int = 40000  # порт по умолчанию

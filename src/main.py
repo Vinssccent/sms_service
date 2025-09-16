@@ -2,7 +2,6 @@
 # -*- coding: utf-8 -*-
 from __future__ import annotations
 
-import os
 import logging
 import threading
 import datetime
@@ -33,6 +32,7 @@ from src.database import SessionLocal, engine
 from src import models, tools, api_stats, tester
 from src.utils import normalize_phone_number
 from src.logging_setup import setup_logging
+from src.settings import settings
 from fastapi.responses import FileResponse
 from pathlib import Path
 from psycopg.types.numeric import NumericLoader
@@ -71,25 +71,25 @@ psycopg.Connection.connect = _new_connect
 # ======================================================================
 
 # === Настройки ротации/лимитов/кулдауна ===
-NUMBER_COOLDOWN_MINUTES = int(os.getenv("NUMBER_COOLDOWN_MINUTES", "5"))
-ALLOW_COOLDOWN_FALLBACK = os.getenv("ALLOW_COOLDOWN_FALLBACK", "1") == "1"
-CANDIDATE_ATTEMPTS = int(os.getenv("CANDIDATE_ATTEMPTS", "30"))
-PROVIDER_SAMPLE_SIZE = int(os.getenv("PROVIDER_SAMPLE_SIZE", "8"))
-BOUNDS_CACHE_TTL = int(os.getenv("BOUNDS_CACHE_TTL", "600"))
+NUMBER_COOLDOWN_MINUTES = settings.NUMBER_COOLDOWN_MINUTES
+ALLOW_COOLDOWN_FALLBACK = settings.ALLOW_COOLDOWN_FALLBACK
+CANDIDATE_ATTEMPTS = settings.CANDIDATE_ATTEMPTS
+PROVIDER_SAMPLE_SIZE = settings.PROVIDER_SAMPLE_SIZE
+BOUNDS_CACHE_TTL = settings.BOUNDS_CACHE_TTL
 # При падении Redis продолжаем работать, а лимиты считаем по БД
-STRICT_LIMITS = os.getenv("STRICT_LIMITS", "1") == "1"
+STRICT_LIMITS = settings.STRICT_LIMITS
 # TTL для прогретых лимитов (сек)
-PRIME_LIMIT_TTL = int(os.getenv("PRIME_LIMIT_TTL", "15"))
+PRIME_LIMIT_TTL = settings.PRIME_LIMIT_TTL
 # Опционально (по умолчанию ВЫКЛ): инкрементить редис-счётчики лимитов при setStatus=6
-INCR_LIMITS_ON_SUCCESS = os.getenv("INCR_LIMITS_ON_SUCCESS", "0") == "1"
+INCR_LIMITS_ON_SUCCESS = settings.INCR_LIMITS_ON_SUCCESS
 
 # =========================
 #     Redis (опционально)
 # =========================
 try:
     redis_client = redis.Redis(
-        host=os.getenv("REDIS_HOST", "127.0.0.1"),
-        port=int(os.getenv("REDIS_PORT", "6379")),
+        host=settings.REDIS_HOST,
+        port=settings.REDIS_PORT,
         decode_responses=True,
         socket_timeout=0.2,
         retry_on_timeout=True,
@@ -306,7 +306,7 @@ async def _perf_timer(request, call_next):
 
 app.add_middleware(
     SessionMiddleware,
-    secret_key=os.getenv("SESSION_SECRET", "CHANGE_ME_NOW__32+chars"),
+    secret_key=settings.SESSION_SECRET,
 )
 Instrumentator().instrument(app).expose(app)
 
@@ -314,8 +314,8 @@ Instrumentator().instrument(app).expose(app)
 #  Admin панели
 # --------------------------
 class SimpleAuthProvider(AuthProvider):
-    ADMIN_USERNAME = os.getenv("ADMIN_USER", "admin")
-    ADMIN_PASSWORD = os.getenv("ADMIN_PASS", "super-secret")
+    ADMIN_USERNAME = settings.ADMIN_USER
+    ADMIN_PASSWORD = settings.ADMIN_PASS
 
     async def is_authenticated(self, request: Request) -> bool:
         return "is_authenticated" in request.session

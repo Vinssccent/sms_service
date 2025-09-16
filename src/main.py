@@ -153,7 +153,6 @@ def delete_numbers_in_background(
                 break
             total_deleted_count += deleted_in_batch
             log.info(f"[BG TASK] Удалена порция из {deleted_in_batch} номеров. Всего удалено: {total_deleted_count}")
-            time.sleep(0.05)
         log.info(f"[BG TASK] Массовое удаление завершено. Всего удалено: {total_deleted_count}")
     except Exception as e:
         log.error(f"[BG TASK] Ошибка при фоновом удалении: {e}", exc_info=True)
@@ -202,7 +201,6 @@ def shuffle_numbers_in_background(
                 break
             total_updated += updated
             log.info(f"[BG SHUFFLE] Обновлена порция {updated}. Всего обновлено: {total_updated}")
-            time.sleep(0.05)
         log.info(f"[BG SHUFFLE] Завершено. Всего перемешано: {total_updated}.")
     except Exception as e:
         log.error(f"[BG SHUFFLE] Ошибка: {e}", exc_info=True)

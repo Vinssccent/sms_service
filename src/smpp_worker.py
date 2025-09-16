@@ -445,6 +445,13 @@ def run_smpp_provider_loop(provider: models.Provider, stop_evt: threading.Event)
             client = smpplib.client.Client(host, port)
             client.connect()
             if not _bind_trx(client, sid, pwd, stype): raise RuntimeError("BIND failed")
+
+            last_any_io = time.time()
+
+            def _mark_activity() -> None:
+                nonlocal last_any_io
+                last_any_io = time.time()
+
             def _on_msg(pdu_obj: Any) -> None:
                 if getattr(pdu_obj, "command", "").lower() != "deliver_sm": return
                 db = SessionLocal()
@@ -453,14 +460,25 @@ def run_smpp_provider_loop(provider: models.Provider, stop_evt: threading.Event)
                     res = _handle_deliver_sm(pdu_obj, db, ctx)
                     log.debug("[OUTBOUND] deliver_sm handled: %s", res)
                 finally: db.close()
+                _mark_activity()
             _safe_set_handler(client, "message_received", _on_msg)
-            last_any_io = time.time()
+
+            def _wrap_activity(handler: Callable[..., Any]) -> Callable[..., Any]:
+                def _inner(*args: Any, **kwargs: Any):
+                    try:
+                        return handler(*args, **kwargs)
+                    finally:
+                        _mark_activity()
+                return _inner
+
+            client.set_message_sent_handler(_wrap_activity(client.message_sent_handler))
+            client.set_query_resp_handler(_wrap_activity(client.query_resp_handler))
+            client.set_error_pdu_handler(_wrap_activity(client.error_pdu_handler))
             while not stop_evt.is_set():
-                if client.read_once(): last_any_io = time.time()
+                client.read_once()
                 if time.time() - last_any_io > 180:
                     log.warning("[OUTBOUND] Нет активности >180 сек. Переподключаюсь.")
                     break
-                time.sleep(0.05)
         except Exception as e:
             log.error("[OUTBOUND] Ошибка в главном цикле: %s", e, exc_info=False)
         finally:
@@ -472,7 +490,7 @@ def run_smpp_provider_loop(provider: models.Provider, stop_evt: threading.Event)
             except Exception: pass
             if not stop_evt.is_set():
                 log.info("[OUTBOUND] Пауза 5 секунд перед переподключением.")
-                time.sleep(5)
+                stop_evt.wait(5)
 
 def _gc_concat_loop():
     while not _gc_stop.is_set():
